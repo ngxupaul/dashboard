@@ -1,0 +1,512 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pandas as pd
+
+
+DATA_PATH = Path(__file__).with_name("full_dataset_with_predictions.csv")
+
+SENTIMENT_ORDER = ["Negative", "Neutral", "Positive"]
+
+ASPECT_COLUMNS = {
+    "Staff & Customer Service": "sentiment_staff",
+    "Punctuality & Reliability": "sentiment_punctuality",
+    "Crowding & Comfort": "sentiment_crowding",
+    "Cleanliness & Hygiene": "sentiment_cleanliness",
+    "Fare & Payment System": "sentiment_fare_payment",
+    "Safety & Security": "sentiment_safety",
+    "Route Coverage & Connectivity": "sentiment_route_connectivity",
+    "Signage & Navigation": "sentiment_signage",
+    "Infrastructure & Facilities": "sentiment_infrastructure",
+    "Overall Experience": "sentiment_overall",
+}
+
+ACTION_ASPECTS = [
+    "Crowding & Comfort",
+    "Fare & Payment System",
+    "Infrastructure & Facilities",
+    "Route Coverage & Connectivity",
+]
+
+ASPECT_ACTIONS = {
+    "Crowding & Comfort": {
+        "goal": "Reduce peak-hour crowding and improve passenger flow.",
+        "actions": [
+            "Increase peak-period headway monitoring on the busiest BTS-linked stations.",
+            "Use platform staff and queue lanes at high-pressure transfer points.",
+            "Publish crowding guidance for alternate boarding times and nearby stations.",
+        ],
+        "metrics": [
+            "Negative crowding reviews",
+            "Agreement-weighted crowding complaints",
+            "Peak-hour complaint share",
+        ],
+    },
+    "Fare & Payment System": {
+        "goal": "Reduce ticketing friction and top-up frustration.",
+        "actions": [
+            "Improve Rabbit Card top-up instructions and passport-policy messaging.",
+            "Prioritize ticket machine UX fixes where queues or cash-only issues appear.",
+            "Track digital payment complaints separately from fare-price complaints.",
+        ],
+        "metrics": [
+            "Negative fare/payment reviews",
+            "Ticket machine complaint share",
+            "Rabbit Card complaint examples",
+        ],
+    },
+    "Infrastructure & Facilities": {
+        "goal": "Target facility issues that hurt trip comfort and accessibility.",
+        "actions": [
+            "Rank station facility issues by agreement-weighted complaints.",
+            "Separate AC, escalator, elevator, and platform complaints for maintenance routing.",
+            "Use high-agreement examples as evidence for operational follow-up.",
+        ],
+        "metrics": [
+            "Negative infrastructure reviews",
+            "Agreement-weighted facility complaints",
+            "Accessibility-related review examples",
+        ],
+    },
+    "Route Coverage & Connectivity": {
+        "goal": "Improve transfer clarity and perceived network coverage.",
+        "actions": [
+            "Identify stations and transfers repeatedly mentioned with negative sentiment.",
+            "Improve wayfinding around transfers to MRT, Airport Rail Link, buses, and malls.",
+            "Use review text to separate true coverage gaps from navigation confusion.",
+        ],
+        "metrics": [
+            "Negative route/connectivity reviews",
+            "Transfer-related complaint share",
+            "Station-specific complaint examples",
+        ],
+    },
+}
+
+TRUSTED_REVIEW_SOURCES = {"tripadvisor", "klook"}
+
+BTS_SIGNAL_PATTERN = re.compile(
+    "|".join(
+        [
+            r"\bbts\b",
+            r"skytrain",
+            r"rabbit\s+card",
+            r"sukhumvit\s+line",
+            r"silom\s+line",
+            r"mo\s+chit\s+bts",
+            r"saphan\s+khwai\s+bts",
+            r"ari\s+bts",
+            r"sanam\s+pao\s+bts",
+            r"victory\s+monument\s+bts",
+            r"phaya\s+thai\s+bts",
+            r"ratchathewi\s+bts",
+            r"siam\s+bts",
+            r"chit\s+lom\s+bts",
+            r"phloen\s+chit\s+bts",
+            r"nana\s+bts",
+            r"asok(?:e)?\s+bts",
+            r"phrom\s+phong\s+bts",
+            r"thong\s*lo(?:r)?\s+bts",
+            r"ekkamai\s+bts",
+            r"phra\s+khanong\s+bts",
+            r"on\s+nut\s+bts",
+            r"bang\s+chak\s+bts",
+            r"punnawithi\s+bts",
+            r"udom\s+suk\s+bts",
+            r"bang\s+na\s+bts",
+            r"bearing\s+bts",
+            r"samrong\s+bts",
+            r"national\s+stadium\s+bts",
+            r"ratchadamri\s+bts",
+            r"sala\s+daeng\s+bts",
+            r"chong\s+nonsi\s+bts",
+            r"saint\s+louis\s+bts",
+            r"surasak\s+bts",
+            r"saphan\s+taksin\s+bts",
+            r"krung\s+thon\s+buri\s+bts",
+            r"wongwian\s+yai\s+bts",
+        ]
+    ),
+    flags=re.IGNORECASE,
+)
+
+REQUIRED_COLUMNS = [
+    "review_title",
+    "review_text",
+    "review_rating",
+    "review_rating_num",
+    "published_date",
+    "review_date",
+    "like_count",
+    "source",
+    "bts_line",
+    "relevant",
+    "primary_aspect",
+    "Final_Label",
+    "LogisticRegression_Label",
+    "DistilBERT_Label",
+    *ASPECT_COLUMNS.values(),
+]
+
+
+def load_dataset(csv_path: Path | str = DATA_PATH) -> pd.DataFrame:
+    csv_path = Path(csv_path)
+    df = pd.read_csv(csv_path, low_memory=False, encoding="utf-8-sig")
+    missing = [column for column in REQUIRED_COLUMNS if column not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {', '.join(missing)}")
+    return prepare_dataset(df)
+
+
+def prepare_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    for column in [
+        "review_title",
+        "review_text",
+        "full_text",
+        "clean_text",
+        "review_link",
+        "source",
+        "bts_line",
+        "Final_Label",
+        "overall_sentiment",
+        "primary_aspect",
+        "LogisticRegression_Label",
+        "DistilBERT_Label",
+        *ASPECT_COLUMNS.values(),
+    ]:
+        if column in df.columns:
+            df[column] = df[column].fillna("").astype(str)
+
+    df["review_rating_num"] = pd.to_numeric(
+        df["review_rating_num"].where(df["review_rating_num"].notna(), df["review_rating"]),
+        errors="coerce",
+    ).fillna(3)
+    df["agreement_count"] = pd.to_numeric(df["like_count"], errors="coerce").fillna(0)
+    df["source_display"] = df["source"].str.strip().replace("", "Unknown")
+    df["source_norm"] = df["source_display"].str.lower()
+    df["bts_line_display"] = df["bts_line"].str.strip().replace("", "Unspecified")
+
+    review_date = pd.to_datetime(df["review_date"], errors="coerce")
+    published_date = pd.to_datetime(df["published_date"], errors="coerce")
+    df["review_date_ui"] = review_date.fillna(published_date)
+    df["review_month_ui"] = df["review_date_ui"].dt.to_period("M").astype(str)
+    df.loc[df["review_month_ui"].eq("NaT"), "review_month_ui"] = "Unknown"
+
+    text_source = _join_text_columns(df, ["review_title", "review_text"])
+    fallback_text = _join_text_columns(df, ["full_text", "clean_text"])
+    df["full_review_text"] = text_source.where(text_source.str.len() > 0, fallback_text)
+    df["text_snippet"] = df["full_review_text"].map(_snippet)
+    df["review_title_display"] = df["review_title"].map(_snippet_title)
+
+    relevance_text = _join_text_columns(
+        df,
+        ["review_title", "review_text", "full_text", "clean_text"],
+    )
+    base_relevant = df["relevant"].astype(str).str.lower().eq("true")
+    trusted_source = df["source_norm"].isin(TRUSTED_REVIEW_SOURCES)
+    direct_bts_signal = relevance_text.str.contains(BTS_SIGNAL_PATTERN, regex=True, na=False)
+    df["service_relevant"] = base_relevant & (trusted_source | direct_bts_signal)
+
+    df["is_negative"] = df["Final_Label"].eq("Negative")
+    df["negative_agreement_weight"] = df["agreement_count"].where(df["is_negative"], 0)
+    return df
+
+
+def filter_dataset(
+    df: pd.DataFrame,
+    *,
+    service_relevant_only: bool = True,
+    sources: list[str] | None = None,
+    lines: list[str] | None = None,
+    sentiments: list[str] | None = None,
+    aspects: list[str] | None = None,
+    ratings: tuple[float, float] | None = None,
+    date_range: tuple[pd.Timestamp, pd.Timestamp] | None = None,
+    min_agreement: float = 0,
+    search_text: str = "",
+) -> pd.DataFrame:
+    mask = pd.Series(True, index=df.index)
+
+    if service_relevant_only:
+        mask &= df["service_relevant"]
+    if sources:
+        mask &= df["source_display"].isin(sources)
+    if lines:
+        mask &= df["bts_line_display"].isin(lines)
+    if sentiments:
+        mask &= df["Final_Label"].isin(sentiments)
+    if aspects:
+        aspect_mask = df["primary_aspect"].isin(aspects)
+        for aspect in aspects:
+            column = ASPECT_COLUMNS.get(aspect)
+            if column:
+                aspect_mask |= df[column].isin(["Positive", "Negative"])
+        mask &= aspect_mask
+    if ratings:
+        low, high = ratings
+        mask &= df["review_rating_num"].between(low, high)
+    if date_range and all(date_range):
+        start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+        end = end + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+        mask &= df["review_date_ui"].notna() & df["review_date_ui"].between(start, end)
+    if min_agreement:
+        mask &= df["agreement_count"] >= min_agreement
+    if search_text.strip():
+        pattern = re.escape(search_text.strip())
+        mask &= df["full_review_text"].str.contains(pattern, case=False, regex=True, na=False)
+
+    return df.loc[mask].copy()
+
+
+def kpi_summary(df: pd.DataFrame, total_rows: int) -> dict[str, float]:
+    review_count = len(df)
+    negative_count = int(df["Final_Label"].eq("Negative").sum())
+    return {
+        "total_reviews": total_rows,
+        "filtered_reviews": review_count,
+        "average_rating": float(df["review_rating_num"].mean()) if review_count else 0,
+        "negative_share": negative_count / review_count if review_count else 0,
+        "total_agreement": float(df["agreement_count"].sum()),
+        "negative_agreement": float(df["negative_agreement_weight"].sum()),
+    }
+
+
+def sentiment_distribution(df: pd.DataFrame) -> pd.DataFrame:
+    counts = df["Final_Label"].value_counts().reindex(SENTIMENT_ORDER, fill_value=0)
+    out = counts.rename_axis("Sentiment").reset_index(name="Reviews")
+    total = out["Reviews"].sum()
+    out["Share"] = (out["Reviews"] / total).fillna(0)
+    return out
+
+
+def sentiment_time_series(df: pd.DataFrame, frequency: str = "M") -> pd.DataFrame:
+    dated = df[df["review_date_ui"].notna()].copy()
+    if dated.empty:
+        return pd.DataFrame(columns=["Period", "Sentiment", "Reviews", "Share"])
+
+    dated["Period"] = dated["review_date_ui"].dt.to_period(frequency).dt.to_timestamp()
+    grouped = (
+        dated.groupby(["Period", "Final_Label"])
+        .size()
+        .rename("Reviews")
+        .reset_index()
+        .rename(columns={"Final_Label": "Sentiment"})
+    )
+    periods = sorted(grouped["Period"].unique())
+    index = pd.MultiIndex.from_product(
+        [periods, SENTIMENT_ORDER],
+        names=["Period", "Sentiment"],
+    )
+    out = (
+        grouped.set_index(["Period", "Sentiment"])
+        .reindex(index, fill_value=0)
+        .reset_index()
+    )
+    totals = out.groupby("Period")["Reviews"].transform("sum")
+    out["Share"] = (out["Reviews"] / totals).fillna(0)
+    return out
+
+
+def aspect_sentiment_time_series(
+    df: pd.DataFrame,
+    aspect: str,
+    frequency: str = "M",
+) -> pd.DataFrame:
+    column = ASPECT_COLUMNS[aspect]
+    mentioned = df[
+        df["review_date_ui"].notna()
+        & (df[column].isin(["Positive", "Negative"]) | df["primary_aspect"].eq(aspect))
+    ].copy()
+    if mentioned.empty:
+        return pd.DataFrame(columns=["Period", "Sentiment", "Reviews", "Share"])
+
+    mentioned["Period"] = mentioned["review_date_ui"].dt.to_period(frequency).dt.to_timestamp()
+    grouped = (
+        mentioned.groupby(["Period", column])
+        .size()
+        .rename("Reviews")
+        .reset_index()
+        .rename(columns={column: "Sentiment"})
+    )
+    periods = sorted(grouped["Period"].unique())
+    index = pd.MultiIndex.from_product(
+        [periods, SENTIMENT_ORDER],
+        names=["Period", "Sentiment"],
+    )
+    out = (
+        grouped.set_index(["Period", "Sentiment"])
+        .reindex(index, fill_value=0)
+        .reset_index()
+    )
+    totals = out.groupby("Period")["Reviews"].transform("sum")
+    out["Share"] = (out["Reviews"] / totals).fillna(0)
+    return out
+
+
+def source_distribution(df: pd.DataFrame, limit: int = 10) -> pd.DataFrame:
+    out = (
+        df["source_display"]
+        .value_counts()
+        .head(limit)
+        .rename_axis("Source")
+        .reset_index(name="Reviews")
+    )
+    return out
+
+
+def aspect_priority(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for aspect, column in ASPECT_COLUMNS.items():
+        negative_mask = df[column].eq("Negative")
+        positive_mask = df[column].eq("Positive")
+        neutral_mask = df[column].eq("Neutral")
+        mentioned_mask = negative_mask | positive_mask | df["primary_aspect"].eq(aspect)
+        negative_count = int(negative_mask.sum())
+        positive_count = int(positive_mask.sum())
+        neutral_count = int((neutral_mask & mentioned_mask).sum())
+        mention_count = int(mentioned_mask.sum())
+        negative_agreement = float(df.loc[negative_mask, "agreement_count"].sum())
+        priority_score = negative_count + 0.1 * negative_agreement
+        rows.append(
+            {
+                "Aspect": aspect,
+                "Mentions": mention_count,
+                "Negative": negative_count,
+                "Neutral": neutral_count,
+                "Positive": positive_count,
+                "Negative agreement": negative_agreement,
+                "Priority score": priority_score,
+                "Negative share": negative_count / mention_count if mention_count else 0,
+            }
+        )
+    return pd.DataFrame(rows).sort_values(
+        ["Priority score", "Negative"],
+        ascending=False,
+    )
+
+
+def aspect_sentiment_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for aspect, column in ASPECT_COLUMNS.items():
+        mentioned_mask = df[column].isin(["Positive", "Negative"]) | df["primary_aspect"].eq(aspect)
+        counts = df.loc[mentioned_mask, column].value_counts().reindex(SENTIMENT_ORDER, fill_value=0)
+        for sentiment, count in counts.items():
+            rows.append({"Aspect": aspect, "Sentiment": sentiment, "Reviews": int(count)})
+    return pd.DataFrame(rows)
+
+
+def high_agreement_low_rating(
+    df: pd.DataFrame,
+    *,
+    min_agreement: float = 20,
+    max_rating: float = 2,
+    limit: int = 25,
+) -> pd.DataFrame:
+    mask = (
+        df["Final_Label"].eq("Negative")
+        & df["review_rating_num"].le(max_rating)
+        & df["agreement_count"].ge(min_agreement)
+    )
+    return review_table(
+        df.loc[mask].sort_values(["agreement_count", "review_rating_num"], ascending=[False, True]),
+        limit=limit,
+    )
+
+
+def model_agreement(df: pd.DataFrame) -> tuple[float, pd.DataFrame]:
+    valid = df[
+        df["LogisticRegression_Label"].isin(SENTIMENT_ORDER)
+        & df["DistilBERT_Label"].isin(SENTIMENT_ORDER)
+    ]
+    if valid.empty:
+        return 0, pd.DataFrame()
+
+    agreement = valid["LogisticRegression_Label"].eq(valid["DistilBERT_Label"]).mean()
+    pairs = (
+        valid.groupby(["LogisticRegression_Label", "DistilBERT_Label"])
+        .size()
+        .reset_index(name="Reviews")
+        .sort_values("Reviews", ascending=False)
+    )
+    return float(agreement), pairs
+
+
+def aspect_evidence_reviews(
+    df: pd.DataFrame,
+    aspect: str,
+    *,
+    limit: int = 5,
+    negative_only: bool = True,
+) -> pd.DataFrame:
+    column = ASPECT_COLUMNS[aspect]
+    if negative_only:
+        mask = df[column].eq("Negative") | (
+            df["primary_aspect"].eq(aspect) & df["Final_Label"].eq("Negative")
+        )
+    else:
+        mask = df[column].isin(["Positive", "Negative"]) | df["primary_aspect"].eq(aspect)
+    ranked = df.loc[mask].sort_values(
+        ["agreement_count", "review_rating_num"],
+        ascending=[False, True],
+    )
+    return review_table(ranked, limit=limit)
+
+
+def review_table(df: pd.DataFrame, *, limit: int = 200) -> pd.DataFrame:
+    columns = [
+        "review_title_display",
+        "text_snippet",
+        "source_display",
+        "review_rating_num",
+        "agreement_count",
+        "primary_aspect",
+        "Final_Label",
+        "review_link",
+    ]
+    out = df.head(limit)[columns].rename(
+        columns={
+            "review_title_display": "Title",
+            "text_snippet": "Review snippet",
+            "source_display": "Source",
+            "review_rating_num": "Rating",
+            "agreement_count": "Agreement count",
+            "primary_aspect": "Primary aspect",
+            "Final_Label": "Sentiment",
+            "review_link": "Review link",
+        }
+    )
+    return out.reset_index(drop=True)
+
+
+def _join_text_columns(df: pd.DataFrame, columns: list[str]) -> pd.Series:
+    available = [column for column in columns if column in df.columns]
+    if not available:
+        return pd.Series("", index=df.index)
+    text = df[available[0]].fillna("").astype(str)
+    for column in available[1:]:
+        text = text.str.cat(df[column].fillna("").astype(str), sep=" ")
+    return text.map(_normalize_spaces)
+
+
+def _normalize_spaces(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _snippet(value: str, length: int = 260) -> str:
+    text = _normalize_spaces(value)
+    if len(text) <= length:
+        return text
+    return text[: length - 3].rstrip() + "..."
+
+
+def _snippet_title(value: str, length: int = 90) -> str:
+    text = _normalize_spaces(value)
+    if not text:
+        return "Untitled review"
+    if len(text) <= length:
+        return text
+    return text[: length - 3].rstrip() + "..."
