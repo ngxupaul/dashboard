@@ -18,6 +18,24 @@ python -m streamlit run app.py
 
 If your default `python` is not available on Windows, use the Python executable installed for your environment.
 
+## GitHub Deployment
+
+The repository includes a GitHub Pages workflow that builds a static business snapshot from the same CSV:
+
+```powershell
+python build_static_site.py
+```
+
+After pushing to `main`, GitHub Actions deploys it to:
+
+<https://ngxupaul.github.io/dashboard/>
+
+For the full Streamlit app on GitHub, use GitHub Codespaces and run:
+
+```bash
+python -m streamlit run app.py
+```
+
 ## Data Rule
 
 `review_rating_num` is the 1-5 sentiment-derived rating. `like_count` is kept as `agreement_count`, so Reddit upvotes are analyzed as how many people agreed with or engaged with a review, not as star ratings.

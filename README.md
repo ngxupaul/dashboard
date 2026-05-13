@@ -26,6 +26,28 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
+## Run On GitHub
+
+This repository supports two GitHub-hosted paths:
+
+1. **GitHub Pages static dashboard**
+
+   The workflow in `.github/workflows/deploy-pages.yml` verifies the data contract, builds `docs/index.html`, and deploys a static business dashboard snapshot.
+
+   Expected URL after the workflow finishes:
+
+   <https://ngxupaul.github.io/dashboard/>
+
+2. **Full Streamlit app in GitHub Codespaces**
+
+   Open the repository in Codespaces, wait for dependencies to install, then run:
+
+   ```bash
+   python -m streamlit run app.py
+   ```
+
+   Codespaces will forward port `8501` and open the Streamlit dashboard.
+
 ## Verify
 
 ```powershell

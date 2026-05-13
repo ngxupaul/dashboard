@@ -1,0 +1,17 @@
+{
+  "name": "BTS Skytrain Dashboard",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "forwardPorts": [8501],
+  "portsAttributes": {
+    "8501": {
+      "label": "Streamlit dashboard",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "postCreateCommand": "python -m pip install -r requirements.txt",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    }
+  }
+}
