@@ -30,6 +30,8 @@ After pushing to `main`, GitHub Actions deploys it to:
 
 <https://ngxupaul.github.io/dashboard/>
 
+If that URL returns 404, enable Pages once in GitHub: **Settings -> Pages -> Deploy from a branch -> `gh-pages` -> `/ (root)`**.
+
 For the full Streamlit app on GitHub, use GitHub Codespaces and run:
 
 ```bash

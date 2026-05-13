@@ -38,6 +38,9 @@ This repository supports two GitHub-hosted paths:
 
    <https://ngxupaul.github.io/dashboard/>
 
+   One-time GitHub setting if the URL returns 404:
+   open repository **Settings -> Pages**, choose **Deploy from a branch**, select `gh-pages` and `/ (root)`, then save.
+
 2. **Full Streamlit app in GitHub Codespaces**
 
    Open the repository in Codespaces, wait for dependencies to install, then run:
