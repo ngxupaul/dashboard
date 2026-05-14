@@ -13,6 +13,12 @@ The dashboard uses `full_dataset_with_predictions.csv` as its single input and s
 - operational recommendations backed by review evidence,
 - searchable passenger review explorer.
 
+Detailed explanations for each analysis section are in
+[`docs/analysis_explanation.md`](docs/analysis_explanation.md).
+
+A table-by-table and chart-by-chart observation guide is in
+[`docs/dashboard_observation_guide.md`](docs/dashboard_observation_guide.md).
+
 ## Core Data Rule
 
 `review_rating_num` is the 1-5 sentiment-derived rating.
@@ -26,11 +32,24 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-## Run On GitHub
+## Deploy
 
-This repository supports two GitHub-hosted paths:
+This repository supports three deployment paths:
 
-1. **GitHub Pages static dashboard**
+1. **Streamlit Community Cloud**
+
+   Use these settings when creating or updating the Streamlit deployment:
+
+   - Repository: `ngxupaul/dashboard`
+   - Branch: `main`
+   - Main file path: `app.py`
+   - Python dependencies: `requirements.txt`
+   - App config: `.streamlit/config.toml`
+
+   After the app is connected to Streamlit Community Cloud, every push to `main`
+   redeploys the full interactive Streamlit dashboard automatically.
+
+2. **GitHub Pages static dashboard**
 
    The workflow in `.github/workflows/deploy-pages.yml` verifies the data contract, builds `docs/index.html`, and deploys a static business dashboard snapshot.
 
@@ -41,7 +60,7 @@ This repository supports two GitHub-hosted paths:
    One-time GitHub setting if the URL returns 404:
    open repository **Settings -> Pages**, choose **Deploy from a branch**, select `gh-pages` and `/ (root)`, then save.
 
-2. **Full Streamlit app in GitHub Codespaces**
+3. **Full Streamlit app in GitHub Codespaces**
 
    Open the repository in Codespaces, wait for dependencies to install, then run:
 

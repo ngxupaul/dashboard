@@ -12,7 +12,6 @@ from dashboard_data import (
     load_dataset,
     sentiment_distribution,
     sentiment_time_series,
-    source_distribution,
 )
 
 
@@ -27,7 +26,6 @@ def main() -> None:
     summary = kpi_summary(service_df, total_rows=len(df))
     sentiment = sentiment_distribution(service_df)
     priority = aspect_priority(service_df).head(10)
-    sources = source_distribution(service_df, limit=8)
     trend = sentiment_time_series(service_df, "M")
     if not trend.empty:
         cutoff = trend["Period"].max() - __import__("pandas").DateOffset(months=35)
@@ -45,7 +43,6 @@ def main() -> None:
         "priority": priority[
             ["Aspect", "Negative", "Positive", "Negative agreement", "Priority score"]
         ].to_dict("records"),
-        "sources": sources.to_dict("records"),
         "trend": _json_records(trend),
     }
 
@@ -192,9 +189,9 @@ def render_html(summary: dict[str, float], payload: dict, complaints) -> str:
       <article class="panel"><h2>Overall sentiment</h2><canvas id="sentimentChart"></canvas></article>
       <article class="panel"><h2>Top service priorities</h2><canvas id="priorityChart"></canvas></article>
       <article class="panel wide"><h2>Sentiment over time</h2><canvas id="trendChart"></canvas></article>
-      <article class="panel"><h2>Source mix</h2><canvas id="sourceChart"></canvas></article>
       <article class="panel"><h2>Business interpretation</h2>
         <p class="snippet">Priority score = negative review count + 0.1 x negative agreement count. This highlights service aspects that are both frequent and strongly agreed with by passengers.</p>
+        <p class="snippet">The sentiment trend uses monthly labels in YYYY-MM format so the rise and fall of negative, neutral, and positive reviews can be read by review month.</p>
         <p class="snippet">The top default issues are crowding, fare/payment, infrastructure, and route/connectivity.</p>
       </article>
       <article class="panel wide"><h2>High-agreement low-rating complaints</h2>{complaint_table(complaints)}</article>
@@ -238,15 +235,6 @@ def render_html(summary: dict[str, float], payload: dict, complaints) -> str:
         }}))
       }},
       options: commonOptions
-    }});
-
-    new Chart(document.getElementById("sourceChart"), {{
-      type: "bar",
-      data: {{
-        labels: dashboardData.sources.map(d => d.Source),
-        datasets: [{{ label: "Reviews", data: dashboardData.sources.map(d => d.Reviews), backgroundColor: "#2A9D8F" }}]
-      }},
-      options: {{ ...commonOptions, indexAxis: "y" }}
     }});
   </script>
 </body>

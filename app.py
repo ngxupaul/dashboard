@@ -24,7 +24,6 @@ from dashboard_data import (
     review_table,
     sentiment_distribution,
     sentiment_time_series,
-    source_distribution,
 )
 
 
@@ -130,7 +129,7 @@ def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
         min_date = dated.min().date()
         max_date = dated.max().date()
         raw_date_range = st.sidebar.date_input(
-            "Review date range",
+            "Analysis date range",
             value=(min_date, max_date),
             min_value=min_date,
             max_value=max_date,
@@ -143,12 +142,12 @@ def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
         elif isinstance(raw_date_range, date):
             selected_date_range = (pd.Timestamp(raw_date_range), pd.Timestamp(raw_date_range))
         st.sidebar.caption(
-            "Date range filters charts, KPIs, and review tables. "
+            "Date range filters the sentiment trend, KPIs, aspect analysis, and review tables. "
             "Rows without parsed dates are excluded from time-filtered views."
         )
 
     st.sidebar.selectbox(
-        "Time aggregation",
+        "Sentiment time aggregation",
         ["Monthly", "Quarterly", "Yearly"],
         index=0,
         key="time_grain",
@@ -194,8 +193,10 @@ def executive_overview(df: pd.DataFrame, filtered: pd.DataFrame) -> None:
         horizontal=True,
         key="overview_trend_metric",
     )
-    trend = sentiment_time_series(filtered, time_frequency())
-    st.altair_chart(sentiment_trend_chart(trend, trend_metric), width="stretch")
+    frequency = time_frequency()
+    trend = sentiment_time_series(filtered, frequency)
+    st.caption(date_window_caption(filtered, frequency))
+    st.altair_chart(sentiment_trend_chart(trend, trend_metric, frequency), width="stretch")
 
     left, right = st.columns([1.05, 1])
     with left:
@@ -207,14 +208,12 @@ def executive_overview(df: pd.DataFrame, filtered: pd.DataFrame) -> None:
         priority = aspect_priority(filtered).head(8)
         st.altair_chart(priority_bar(priority), width="stretch")
 
-    left, right = st.columns([1, 1])
-    with left:
-        st.subheader("Review source mix")
-        st.altair_chart(source_bar(source_distribution(filtered)), width="stretch")
-    with right:
-        st.subheader("Model checkpoint")
-        agreement, pairs = model_agreement(filtered)
+    st.subheader("Model checkpoint")
+    model_left, model_right = st.columns([0.7, 1.3])
+    agreement, pairs = model_agreement(filtered)
+    with model_left:
         metric_card("LR vs DistilBERT agreement", f"{agreement:.2%}", "Agreement on current filtered rows")
+    with model_right:
         st.dataframe(pairs.head(8), width="stretch", hide_index=True)
 
 
@@ -261,10 +260,13 @@ def aspect_priority_dashboard(filtered: pd.DataFrame) -> None:
         horizontal=True,
         key="aspect_trend_metric",
     )
+    frequency = time_frequency()
+    st.caption(date_window_caption(filtered, frequency))
     st.altair_chart(
         sentiment_trend_chart(
-            aspect_sentiment_time_series(filtered, selected_aspect, time_frequency()),
+            aspect_sentiment_time_series(filtered, selected_aspect, frequency),
             aspect_trend_metric,
+            frequency,
         ),
         width="stretch",
     )
@@ -281,8 +283,10 @@ def rating_vs_agreement(filtered: pd.DataFrame) -> None:
     st.altair_chart(rating_agreement_scatter(scatter_df), width="stretch")
 
     st.subheader("Sentiment trend in the selected period")
+    frequency = time_frequency()
+    st.caption(date_window_caption(filtered, frequency))
     st.altair_chart(
-        sentiment_trend_chart(sentiment_time_series(filtered, time_frequency()), "Review count"),
+        sentiment_trend_chart(sentiment_time_series(filtered, frequency), "Review count", frequency),
         width="stretch",
     )
 
@@ -417,20 +421,6 @@ def priority_bar(data: pd.DataFrame) -> alt.Chart:
     )
 
 
-def source_bar(data: pd.DataFrame) -> alt.Chart:
-    return (
-        alt.Chart(data)
-        .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
-        .encode(
-            x=alt.X("Reviews:Q"),
-            y=alt.Y("Source:N", sort="-x", title=None),
-            color=alt.value("#2A9D8F"),
-            tooltip=["Source", "Reviews"],
-        )
-        .properties(height=320)
-    )
-
-
 def aspect_heatmap(data: pd.DataFrame) -> alt.Chart:
     base = (
         alt.Chart(data)
@@ -466,7 +456,7 @@ def rating_agreement_scatter(data: pd.DataFrame) -> alt.Chart:
     )
 
 
-def sentiment_trend_chart(data: pd.DataFrame, metric: str) -> alt.Chart:
+def sentiment_trend_chart(data: pd.DataFrame, metric: str, frequency: str = "M") -> alt.Chart:
     if data.empty:
         return (
             alt.Chart(pd.DataFrame({"Message": ["No dated reviews in the selected filter."]}))
@@ -475,6 +465,7 @@ def sentiment_trend_chart(data: pd.DataFrame, metric: str) -> alt.Chart:
             .properties(height=320)
         )
 
+    chart_data, period_order = add_period_labels(data, frequency)
     value_field = "Share" if metric == "Sentiment share" else "Reviews"
     y_axis = alt.Y(
         f"{value_field}:Q",
@@ -482,13 +473,19 @@ def sentiment_trend_chart(data: pd.DataFrame, metric: str) -> alt.Chart:
         axis=alt.Axis(format=".0%" if value_field == "Share" else ","),
     )
     base = (
-        alt.Chart(data)
+        alt.Chart(chart_data)
         .encode(
-            x=alt.X("Period:T", title="Period"),
+            x=alt.X(
+                "PeriodLabel:N",
+                sort=period_order,
+                title=period_axis_title(frequency),
+                axis=alt.Axis(labelAngle=-35, labelLimit=110, labelOverlap="greedy"),
+            ),
             y=y_axis,
+            order=alt.Order("PeriodSort:Q"),
             color=sentiment_color(),
             tooltip=[
-                alt.Tooltip("Period:T", title="Period", format="%Y-%m"),
+                alt.Tooltip("PeriodLabel:N", title="Period"),
                 "Sentiment",
                 alt.Tooltip("Reviews:Q", format=","),
                 alt.Tooltip("Share:Q", format=".1%"),
@@ -497,6 +494,46 @@ def sentiment_trend_chart(data: pd.DataFrame, metric: str) -> alt.Chart:
         .properties(height=330)
     )
     return base.mark_line(point=False, strokeWidth=3) + base.mark_circle(size=54)
+
+
+def add_period_labels(data: pd.DataFrame, frequency: str) -> tuple[pd.DataFrame, list[str]]:
+    chart_data = data.copy()
+    periods = pd.to_datetime(chart_data["Period"])
+    if frequency == "Q":
+        labels = periods.dt.to_period("Q").astype(str).str.replace("Q", " Q", regex=False)
+    elif frequency == "Y":
+        labels = periods.dt.strftime("%Y")
+    else:
+        labels = periods.dt.strftime("%Y-%m")
+
+    chart_data["PeriodLabel"] = labels
+    chart_data["PeriodSort"] = periods.astype("int64")
+    ordered = (
+        chart_data.assign(_Period=periods)
+        .drop_duplicates("PeriodLabel")
+        .sort_values("_Period")["PeriodLabel"]
+        .tolist()
+    )
+    return chart_data, ordered
+
+
+def period_axis_title(frequency: str) -> str:
+    return {
+        "M": "Review month",
+        "Q": "Review quarter",
+        "Y": "Review year",
+    }.get(frequency, "Review period")
+
+
+def date_window_caption(df: pd.DataFrame, frequency: str) -> str:
+    dated = df["review_date_ui"].dropna()
+    if dated.empty:
+        return "No parsed review dates are available in the selected filters."
+
+    period_name = period_axis_title(frequency).replace("Review ", "").lower()
+    start = dated.min().strftime("%d/%m/%Y")
+    end = dated.max().strftime("%d/%m/%Y")
+    return f"Showing reviews from {start} to {end}, grouped by {period_name}."
 
 
 def time_frequency() -> str:
