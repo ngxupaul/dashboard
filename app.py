@@ -601,29 +601,31 @@ def inject_css() -> None:
         }
         .app-header {
             align-items: center;
-            border-bottom: 1px solid #D8DEE4;
+            background: #0F4C5C;
+            border: 1px solid #0B3F4C;
+            border-radius: 8px;
             display: flex;
             justify-content: space-between;
             margin-bottom: 1.2rem;
-            padding-bottom: 0.85rem;
+            padding: 1rem 1.1rem;
         }
         .app-header h1 {
-            color: #101820;
+            color: #FFFFFF;
             font-size: 2rem;
             font-weight: 750;
             letter-spacing: 0;
             margin: 0;
         }
         .app-header p {
-            color: #5D6673;
+            color: #E8F3F1;
             font-size: 0.98rem;
             margin: 0.25rem 0 0;
         }
         .header-pill {
-            background: #E8F3F1;
-            border: 1px solid #BBDCD6;
+            background: rgba(255, 255, 255, 0.14);
+            border: 1px solid rgba(255, 255, 255, 0.38);
             border-radius: 999px;
-            color: #0F4C5C;
+            color: #FFFFFF;
             font-size: 0.82rem;
             font-weight: 650;
             padding: 0.45rem 0.75rem;

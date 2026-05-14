@@ -79,8 +79,9 @@ def render_html(summary: dict[str, float], payload: dict, complaints) -> str:
       margin: 0;
     }}
     header {{
-      background: #ffffff;
-      border-bottom: 1px solid var(--line);
+      background: var(--teal);
+      border-bottom: 1px solid #0b3f4c;
+      color: #ffffff;
       padding: 28px max(24px, calc((100vw - 1180px) / 2));
     }}
     header h1 {{
@@ -89,7 +90,7 @@ def render_html(summary: dict[str, float], payload: dict, complaints) -> str:
       margin: 0;
     }}
     header p {{
-      color: var(--muted);
+      color: #e8f3f1;
       font-size: 17px;
       line-height: 1.5;
       margin: 10px 0 0;
