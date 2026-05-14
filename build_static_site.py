@@ -198,6 +198,7 @@ def business_recommendations(service_df: pd.DataFrame, priority: pd.DataFrame) -
     for aspect in ACTION_ASPECTS:
         row = rows.loc[aspect]
         actions = ASPECT_ACTIONS[aspect]
+        time_signal = aspect_time_signal(service_df, aspect)
         evidence = aspect_evidence_reviews(service_df, aspect, limit=2)
         snippets = evidence["Review snippet"].tolist() if not evidence.empty else []
         recommendations.append(
@@ -205,11 +206,13 @@ def business_recommendations(service_df: pd.DataFrame, priority: pd.DataFrame) -
                 "aspect": aspect,
                 "aspectLabel": aspect_label(aspect),
                 "problem": actions["goal"],
-                "priority": recommendation_priority(row),
+                "priority": recommendation_priority(row, time_signal),
                 "businessImpact": business_impact(aspect),
                 "actions": actions["actions"],
                 "successMetrics": actions["metrics"],
                 "evidenceReviews": snippets,
+                "timeSignal": time_signal,
+                "timeBasedTrigger": time_based_trigger(aspect, time_signal),
                 "numbers": {
                     "mentions": int(row["Mentions"]),
                     "negative": int(row["Negative"]),
@@ -219,18 +222,120 @@ def business_recommendations(service_df: pd.DataFrame, priority: pd.DataFrame) -
                     "negativeAgreement": int(row["Negative agreement"]),
                     "priorityScore": float(row["Priority score"]),
                 },
-                "interpretation": recommendation_interpretation(aspect, row),
-                "conclusion": recommendation_conclusion(aspect, row),
+                "interpretation": recommendation_interpretation(aspect, row, time_signal),
+                "conclusion": recommendation_conclusion(aspect, row, time_signal),
             }
         )
-    return recommendations
+    return sorted(
+        recommendations,
+        key=lambda rec: (
+            rec["timeSignal"]["negativeShareChange"],
+            rec["timeSignal"]["negativeCountChange"],
+            rec["numbers"]["priorityScore"],
+        ),
+        reverse=True,
+    )
 
 
-def recommendation_priority(row: pd.Series) -> str:
+def aspect_time_signal(service_df: pd.DataFrame, aspect: str) -> dict[str, object]:
+    trend = aspect_sentiment_time_series(service_df, aspect, "M")
+    if trend.empty:
+        return empty_time_signal()
+
+    pivot = (
+        trend.pivot_table(index="Period", columns="Sentiment", values="Reviews", aggfunc="sum")
+        .reindex(columns=["Negative", "Neutral", "Positive"], fill_value=0)
+        .sort_index()
+    )
+    active = pivot[pivot.sum(axis=1).gt(0)]
+    if len(active) < 2:
+        return empty_time_signal()
+
+    previous = active.iloc[-2]
+    current = active.iloc[-1]
+    previous_total = int(previous.sum())
+    current_total = int(current.sum())
+    previous_negative_share = float(previous["Negative"] / previous_total) if previous_total else 0
+    current_negative_share = float(current["Negative"] / current_total) if current_total else 0
+
+    negative_series = active["Negative"].astype(float)
+    baseline = float(negative_series.iloc[-4:-1].mean()) if len(negative_series) >= 4 else float(negative_series.iloc[:-1].mean())
+    spike_score = max(0.0, float(current["Negative"]) - baseline)
+
+    share_change = current_negative_share - previous_negative_share
+    count_change = int(current["Negative"] - previous["Negative"])
+    if share_change >= 0.05 or count_change >= 5:
+        direction = "worsening"
+    elif share_change <= -0.05 or count_change <= -5:
+        direction = "improving"
+    else:
+        direction = "stable"
+
+    return {
+        "previousPeriod": active.index[-2].strftime("%Y-%m"),
+        "currentPeriod": active.index[-1].strftime("%Y-%m"),
+        "previousMentions": previous_total,
+        "currentMentions": current_total,
+        "previousNegative": int(previous["Negative"]),
+        "currentNegative": int(current["Negative"]),
+        "previousNegativeShare": previous_negative_share,
+        "currentNegativeShare": current_negative_share,
+        "negativeShareChange": float(share_change),
+        "negativeCountChange": count_change,
+        "spikeScore": spike_score,
+        "direction": direction,
+    }
+
+
+def empty_time_signal() -> dict[str, object]:
+    return {
+        "previousPeriod": "",
+        "currentPeriod": "",
+        "previousMentions": 0,
+        "currentMentions": 0,
+        "previousNegative": 0,
+        "currentNegative": 0,
+        "previousNegativeShare": 0,
+        "currentNegativeShare": 0,
+        "negativeShareChange": 0,
+        "negativeCountChange": 0,
+        "spikeScore": 0,
+        "direction": "unknown",
+    }
+
+
+def time_based_trigger(aspect: str, signal: dict[str, object]) -> str:
+    label = aspect_label(aspect)
+    if signal["direction"] == "worsening":
+        return (
+            f"{label} is worsening in {signal['currentPeriod']}: negative share moved from "
+            f"{signal['previousNegativeShare']:.1%} to {signal['currentNegativeShare']:.1%}, "
+            f"with {signal['negativeCountChange']:+,} negative reviews versus the previous month."
+        )
+    if signal["direction"] == "improving":
+        return (
+            f"{label} improved in {signal['currentPeriod']}: negative share moved from "
+            f"{signal['previousNegativeShare']:.1%} to {signal['currentNegativeShare']:.1%}. "
+            "Keep monitoring because the aspect remains a priority in the full-period evidence."
+        )
+    if signal["direction"] == "stable":
+        return (
+            f"{label} is stable month over month, with negative share near "
+            f"{signal['currentNegativeShare']:.1%} in {signal['currentPeriod']}. "
+            "The recommendation is driven by persistent risk rather than a sudden spike."
+        )
+    return f"{label} has insufficient month-over-month data, so the recommendation uses full-period evidence."
+
+
+def recommendation_priority(row: pd.Series, time_signal: dict[str, object]) -> str:
     share = float(row["Negative share"])
     negative = int(row["Negative"])
     agreement = int(row["Negative agreement"])
-    if share >= 0.45 and negative >= 250 and agreement >= 1000:
+    worsening = (
+        time_signal["direction"] == "worsening"
+        and (time_signal["negativeShareChange"] >= 0.08 or time_signal["negativeCountChange"] >= 10)
+    )
+    if (share >= 0.45 and negative >= 250 and agreement >= 1000) or worsening:
         return "Critical"
     if share >= 0.35 or negative >= 250 or agreement >= 1000:
         return "High"
@@ -246,18 +351,36 @@ def business_impact(aspect: str) -> str:
     }.get(aspect, "The issue can reduce passenger satisfaction and repeat usage.")
 
 
-def recommendation_interpretation(aspect: str, row: pd.Series) -> str:
+def recommendation_interpretation(
+    aspect: str,
+    row: pd.Series,
+    time_signal: dict[str, object],
+) -> str:
+    trend_sentence = time_based_trigger(aspect, time_signal)
     return (
         f"{aspect_label(aspect)} should be treated as an operational signal because "
         f"{int(row['Negative']):,} of {int(row['Mentions']):,} mentioned reviews are negative "
-        f"({float(row['Negative share']):.1%})."
+        f"({float(row['Negative share']):.1%}). Time-based evidence: {trend_sentence}"
     )
 
 
-def recommendation_conclusion(aspect: str, row: pd.Series) -> str:
+def recommendation_conclusion(
+    aspect: str,
+    row: pd.Series,
+    time_signal: dict[str, object],
+) -> str:
+    if time_signal["direction"] == "worsening":
+        urgency = "recent monthly deterioration"
+    elif time_signal["direction"] == "improving":
+        urgency = "remaining full-period risk despite recent improvement"
+    elif time_signal["direction"] == "stable":
+        urgency = "persistent month-over-month risk"
+    else:
+        urgency = "available full-period risk evidence"
     return (
         f"Prioritize {aspect_label(aspect).lower()} improvements because the issue has both "
-        f"complaint volume and {int(row['Negative agreement']):,} agreement points behind negative reviews."
+        f"complaint volume and {int(row['Negative agreement']):,} agreement points behind negative reviews, "
+        f"with the action trigger based on {urgency}."
     )
 
 
@@ -697,7 +820,7 @@ def render_html(payload: dict) -> str:
         <div class="page-head">
           <div>
             <h2>Recommendation & Resolution Center</h2>
-            <p>Every recommendation includes problem, evidence, business impact, action, priority, and success metric.</p>
+            <p>Every recommendation is triggered by monthly time-based evidence, then supported with full-period complaint volume, agreement weight, business impact, action, and success metric.</p>
           </div>
           <div class="pill">{len(payload["recommendations"])} priority blocks</div>
         </div>
@@ -708,7 +831,7 @@ def render_html(payload: dict) -> str:
         <div class="page-head">
           <div>
             <h2>Business Suggestion</h2>
-            <p>Executive-level risks, opportunities, and strategic actions based on measured sentiment evidence.</p>
+            <p>Executive-level risks, opportunities, and strategic actions based on recent monthly trend evidence plus measured sentiment evidence.</p>
           </div>
           <div class="pill">Decision support</div>
         </div>
@@ -932,12 +1055,15 @@ def render_html(payload: dict) -> str:
     function renderRecommendations() {{
       document.getElementById("recommendationCards").innerHTML = dashboardData.recommendations.map(rec => {{
         const nums = rec.numbers;
+        const time = rec.timeSignal;
         const evidence = rec.evidenceReviews.map(item => `<li>${{html(item)}}</li>`).join("");
         const actions = rec.actions.map(item => `<li>${{html(item)}}</li>`).join("");
         const metrics = rec.successMetrics.map(item => `<li>${{html(item)}}</li>`).join("");
         return `<article class="recommendation">
           <h3>${{html(rec.aspectLabel)}} <span class="risk ${{html(rec.priority)}}">${{html(rec.priority)}}</span></h3>
-          <div class="meta">${{number(nums.negative)}} negative / ${{number(nums.mentions)}} mentions (${{percent(nums.negativeShare)}}); agreement evidence ${{number(nums.negativeAgreement)}}; priority score ${{number(nums.priorityScore)}}.</div>
+          <div class="meta">Time-based trigger: ${{html(rec.timeBasedTrigger)}}</div>
+          <div class="meta">${{html(time.previousPeriod)}} -> ${{html(time.currentPeriod)}}: negative share ${{percent(time.previousNegativeShare)}} -> ${{percent(time.currentNegativeShare)}}, negative count change ${{number(time.negativeCountChange)}}.</div>
+          <div class="meta">Full-period support: ${{number(nums.negative)}} negative / ${{number(nums.mentions)}} mentions (${{percent(nums.negativeShare)}}); agreement evidence ${{number(nums.negativeAgreement)}}; priority score ${{number(nums.priorityScore)}}.</div>
           <p><b>Problem:</b> ${{html(rec.problem)}}</p>
           <p><b>Interpretation:</b> ${{html(rec.interpretation)}}</p>
           <p><b>Business impact:</b> ${{html(rec.businessImpact)}}</p>
@@ -950,8 +1076,8 @@ def render_html(payload: dict) -> str:
     }}
 
     function renderStrategy() {{
-      const risks = dashboardData.priority.slice(0, 4).map(row =>
-        `<p><b>${{html(row["Aspect label"])}}</b>: ${{number(row.Negative)}} negative reviews, ${{percent(row["Negative share"])}} negative share, and ${{number(row["Negative agreement"])}} agreement points.</p>`
+      const risks = dashboardData.recommendations.slice(0, 4).map(rec =>
+        `<p><b>${{html(rec.aspectLabel)}}</b>: ${{html(rec.timeBasedTrigger)}} Full-period support: ${{number(rec.numbers.negative)}} negative reviews and ${{number(rec.numbers.negativeAgreement)}} agreement points.</p>`
       ).join("");
       const opportunities = [...dashboardData.aspectDistribution]
         .sort((a, b) => b["Positive share"] - a["Positive share"])
@@ -959,7 +1085,7 @@ def render_html(payload: dict) -> str:
         .map(row => `<p><b>${{html(row["Aspect label"])}}</b>: ${{number(row.Positive)}} positive reviews (${{percent(row["Positive share"])}} positive share). Use this strength in passenger communication and service planning.</p>`)
         .join("");
       const recs = dashboardData.recommendations.map(rec =>
-        `<p><b>${{html(rec.aspectLabel)}}:</b> Evidence shows ${{number(rec.numbers.negative)}} negative reviews and ${{percent(rec.numbers.negativeShare)}} negative share. Interpretation: ${{html(rec.interpretation)}} Suggested action: ${{html(rec.actions[0])}}</p>`
+        `<p><b>${{html(rec.aspectLabel)}}:</b> Time evidence: ${{html(rec.timeBasedTrigger)}} Interpretation: ${{html(rec.interpretation)}} Suggested action: ${{html(rec.actions[0])}}</p>`
       ).join("");
       document.getElementById("riskList").innerHTML = risks;
       document.getElementById("opportunityList").innerHTML = opportunities;
