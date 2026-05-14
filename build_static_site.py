@@ -663,13 +663,10 @@ def render_html(payload: dict) -> str:
         <p>Generated from <code>full_dataset_with_predictions.csv</code>. Built for analysis, interpretation, and operational decisions.</p>
       </div>
       <nav class="nav" aria-label="Dashboard tabs">
-        <button class="tab-button active" data-tab="overview">Executive Overview</button>
-        <button class="tab-button" data-tab="aspects">Aspect Analysis</button>
+        <button class="tab-button active" data-tab="overview">Overview & Data Insight</button>
+        <button class="tab-button" data-tab="root">NSS Spike Detection</button>
         <button class="tab-button" data-tab="time">Time-Based Analysis</button>
-        <button class="tab-button" data-tab="root">Root Cause BI</button>
-        <button class="tab-button" data-tab="recommendations">Resolution Center</button>
-        <button class="tab-button" data-tab="strategy">Business Suggestion</button>
-        <button class="tab-button" data-tab="explorer">Review Explorer</button>
+        <button class="tab-button" data-tab="recommendations">Business Suggestion</button>
       </nav>
       <div class="sidebar-note">
         Global sentiment uses <code>Final_Label</code>. ABSA sentiment uses <code>sentiment_*</code> columns.
@@ -680,8 +677,8 @@ def render_html(payload: dict) -> str:
       <section class="tab-panel active" id="overview">
         <div class="page-head">
           <div>
-            <h2>Executive Overview</h2>
-            <p>High-level passenger sentiment, service risk, satisfaction, and model confidence after the default BTS-service relevance filter.</p>
+            <h2>Overview & Data Insight</h2>
+            <p>Complete overview of passenger sentiment, business health, aspect performance, and review evidence after the default BTS-service relevance filter.</p>
           </div>
           <div class="pill">Scope: service-relevant reviews</div>
         </div>
@@ -709,20 +706,8 @@ def render_html(payload: dict) -> str:
             <p id="periodExplain"></p>
             <div class="canvas-box"><canvas id="overallTrendChart"></canvas></div>
           </article>
-        </section>
-      </section>
-
-      <section class="tab-panel" id="aspects">
-        <div class="page-head">
-          <div>
-            <h2>Aspect-Based Sentiment Analysis</h2>
-            <p>Aspect sentiment uses the ABSA columns and separates service problems such as crowding, fare/payment, infrastructure, route connectivity, staff, safety, cleanliness, signage, punctuality, and overall experience.</p>
-          </div>
-          <div class="pill">ABSA aspect matrix</div>
-        </div>
-        <section class="grid">
           <article class="panel wide">
-            <h3>Negative / Neutral / Positive by aspect</h3>
+            <h3>Aspect distribution and sentiment heatmap</h3>
             <p>Stacked counts show whether each service area is mainly praised, neutral, or complained about.</p>
             <div class="canvas-box tall"><canvas id="aspectStackChart"></canvas></div>
           </article>
@@ -739,6 +724,22 @@ def render_html(payload: dict) -> str:
             <h3>Priority ranking</h3>
             <div id="aspectTable"></div>
           </article>
+          <article class="panel wide">
+            <h3>Review Explorer</h3>
+            <p>Search and filter raw review evidence behind the business insights.</p>
+            <div class="control-row">
+              <select id="reviewSentimentFilter"><option value="">All sentiments</option></select>
+              <select id="reviewAspectFilter"><option value="">All aspects</option></select>
+              <select id="reviewLineFilter"><option value="">All BTS lines</option></select>
+              <select id="reviewSourceFilter"><option value="">All sources</option></select>
+              <input id="reviewStartDate" type="date" title="Start date">
+              <input id="reviewEndDate" type="date" title="End date">
+              <input id="reviewSearch" type="search" placeholder="Search review text">
+              <input id="reviewAgreement" type="number" min="0" value="0" title="Minimum agreement">
+            </div>
+            <p class="review-count" id="reviewCount"></p>
+            <div id="reviewTable"></div>
+          </article>
         </section>
       </section>
 
@@ -746,9 +747,9 @@ def render_html(payload: dict) -> str:
         <div class="page-head">
           <div>
             <h2>Time-Based Analysis</h2>
-            <p>Track overall sentiment and aspect-specific sentiment by day, week, month, or quarter. The dashboard also flags recent movement and negative spikes.</p>
+            <p>Track overall sentiment, review frequency, and selected aspect movement by day, week, month, or quarter.</p>
           </div>
-          <div class="pill">Trend and spike detection</div>
+          <div class="pill">Daily / Weekly / Monthly / Quarterly</div>
         </div>
         <section class="grid">
           <article class="panel wide">
@@ -774,25 +775,30 @@ def render_html(payload: dict) -> str:
             <p id="aspectTrendExplain"></p>
             <div class="canvas-box"><canvas id="aspectTrendChart"></canvas></div>
           </article>
-          <article class="panel">
-            <h3>Negative spikes and recent changes</h3>
-            <div id="spikeTable"></div>
-            <div id="aspectChangeTable"></div>
-          </article>
         </section>
       </section>
 
       <section class="tab-panel" id="root">
         <div class="page-head">
           <div>
-            <h2>Business Intelligence & Root Cause Analysis</h2>
-            <p>Translate sentiment into likely operational themes. These are evidence-based associations, not causal claims.</p>
+            <h2>NSS (Negative Sentiment Spike)</h2>
+            <p>Detect sudden increases in negative sentiment, identify contributing aspects, and classify operational risk.</p>
           </div>
-          <div class="pill">Operational diagnosis</div>
+          <div class="pill">Spike detection and causes</div>
         </div>
         <section class="grid">
+          <article class="panel">
+            <h3>Negative spikes</h3>
+            <p>Periods where negative review volume rises above the recent rolling baseline.</p>
+            <div id="spikeTable"></div>
+          </article>
+          <article class="panel">
+            <h3>Aspect spike contribution</h3>
+            <p>Recent aspect movement explains which service areas are driving NSS risk.</p>
+            <div id="aspectChangeTable"></div>
+          </article>
           <article class="panel wide">
-            <h3>Root cause matrix</h3>
+            <h3>Risk severity and root cause matrix</h3>
             <div id="rootCauseTable"></div>
           </article>
           <article class="panel">
@@ -819,21 +825,18 @@ def render_html(payload: dict) -> str:
       <section class="tab-panel" id="recommendations">
         <div class="page-head">
           <div>
-            <h2>Recommendation & Resolution Center</h2>
+            <h2>Business Suggestion & Resolution Center</h2>
             <p>Every recommendation is triggered by monthly time-based evidence, then supported with full-period complaint volume, agreement weight, business impact, action, and success metric.</p>
           </div>
           <div class="pill">{len(payload["recommendations"])} priority blocks</div>
         </div>
         <section class="recommendations" id="recommendationCards"></section>
-      </section>
-
-      <section class="tab-panel" id="strategy">
         <div class="page-head">
           <div>
-            <h2>Business Suggestion</h2>
-            <p>Executive-level risks, opportunities, and strategic actions based on recent monthly trend evidence plus measured sentiment evidence.</p>
+            <h2>Executive Decision Support</h2>
+            <p>Strategic risks, opportunities, and executive actions based on recent monthly trend evidence plus measured sentiment evidence.</p>
           </div>
-          <div class="pill">Decision support</div>
+          <div class="pill">Dynamic suggestions</div>
         </div>
         <section class="grid-3">
           <article class="insight">
@@ -849,29 +852,6 @@ def render_html(payload: dict) -> str:
             <div id="executiveRecommendations"></div>
           </article>
         </section>
-      </section>
-
-      <section class="tab-panel" id="explorer">
-        <div class="page-head">
-          <div>
-            <h2>Review Explorer</h2>
-            <p>Inspect raw review evidence behind the dashboard. This client-side explorer includes the highest-agreement service-relevant reviews.</p>
-          </div>
-          <div class="pill">Evidence table</div>
-        </div>
-        <article class="panel wide">
-          <h3>Filters</h3>
-          <div class="control-row">
-            <select id="reviewSentimentFilter"><option value="">All sentiments</option></select>
-            <select id="reviewAspectFilter"><option value="">All aspects</option></select>
-            <select id="reviewLineFilter"><option value="">All BTS lines</option></select>
-            <select id="reviewSourceFilter"><option value="">All sources</option></select>
-            <input id="reviewSearch" type="search" placeholder="Search review text">
-            <input id="reviewAgreement" type="number" min="0" value="0" title="Minimum agreement">
-          </div>
-          <p class="review-count" id="reviewCount"></p>
-          <div id="reviewTable"></div>
-        </article>
       </section>
 
       <p class="footer">Generated by <code>build_static_site.py</code> from <code>full_dataset_with_predictions.csv</code>.</p>
@@ -1009,7 +989,9 @@ def render_html(payload: dict) -> str:
       fillSelect("reviewAspectFilter", [...new Set(dashboardData.reviews.map(r => r["Primary aspect"]).filter(Boolean))].sort());
       fillSelect("reviewLineFilter", [...new Set(dashboardData.reviews.map(r => r["BTS line"]).filter(Boolean))].sort());
       fillSelect("reviewSourceFilter", [...new Set(dashboardData.reviews.map(r => r.Source).filter(Boolean))].sort());
-      ["reviewSentimentFilter", "reviewAspectFilter", "reviewLineFilter", "reviewSourceFilter", "reviewSearch", "reviewAgreement"]
+      document.getElementById("reviewStartDate").value = dashboardData.summary.date_start || "";
+      document.getElementById("reviewEndDate").value = dashboardData.summary.date_end || "";
+      ["reviewSentimentFilter", "reviewAspectFilter", "reviewLineFilter", "reviewSourceFilter", "reviewStartDate", "reviewEndDate", "reviewSearch", "reviewAgreement"]
         .forEach(id => document.getElementById(id).addEventListener("input", renderReviews));
     }}
 
@@ -1024,6 +1006,8 @@ def render_html(payload: dict) -> str:
       const aspect = document.getElementById("reviewAspectFilter").value;
       const line = document.getElementById("reviewLineFilter").value;
       const source = document.getElementById("reviewSourceFilter").value;
+      const startDate = document.getElementById("reviewStartDate").value;
+      const endDate = document.getElementById("reviewEndDate").value;
       const search = document.getElementById("reviewSearch").value.trim().toLowerCase();
       const minAgreement = Number(document.getElementById("reviewAgreement").value || 0);
       const rows = dashboardData.reviews.filter(row =>
@@ -1031,6 +1015,8 @@ def render_html(payload: dict) -> str:
         (!aspect || row["Primary aspect"] === aspect) &&
         (!line || row["BTS line"] === line) &&
         (!source || row.Source === source) &&
+        (!startDate || !row.Date || row.Date >= startDate) &&
+        (!endDate || !row.Date || row.Date <= endDate) &&
         Number(row["Agreement count"] || 0) >= minAgreement &&
         (!search || `${{row.Title}} ${{row["Review snippet"]}}`.toLowerCase().includes(search))
       );
