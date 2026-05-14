@@ -3,4 +3,5 @@ __pycache__/
 .pytest_cache/
 .streamlit/secrets.toml
 streamlit*.log
+static_server.log
 bts_review/

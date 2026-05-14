@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,61 @@ import pandas as pd
 DATA_PATH = Path(__file__).with_name("full_dataset_with_predictions.csv")
 
 SENTIMENT_ORDER = ["Negative", "Neutral", "Positive"]
+
+STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "also",
+    "and",
+    "are",
+    "around",
+    "because",
+    "been",
+    "before",
+    "being",
+    "bts",
+    "but",
+    "can",
+    "from",
+    "get",
+    "had",
+    "has",
+    "have",
+    "into",
+    "its",
+    "just",
+    "like",
+    "more",
+    "not",
+    "one",
+    "only",
+    "our",
+    "out",
+    "over",
+    "review",
+    "skytrain",
+    "some",
+    "station",
+    "stations",
+    "than",
+    "that",
+    "the",
+    "their",
+    "there",
+    "they",
+    "this",
+    "through",
+    "train",
+    "trains",
+    "use",
+    "was",
+    "were",
+    "when",
+    "with",
+    "you",
+    "your",
+}
 
 ASPECT_COLUMNS = {
     "Staff & Customer Service": "sentiment_staff",
@@ -265,13 +321,24 @@ def filter_dataset(
 def kpi_summary(df: pd.DataFrame, total_rows: int) -> dict[str, float]:
     review_count = len(df)
     negative_count = int(df["Final_Label"].eq("Negative").sum())
+    neutral_count = int(df["Final_Label"].eq("Neutral").sum())
+    positive_count = int(df["Final_Label"].eq("Positive").sum())
+    dated = df["review_date_ui"].dropna()
+    satisfaction_index = (
+        (positive_count + 0.5 * neutral_count) / review_count * 100 if review_count else 0
+    )
     return {
         "total_reviews": total_rows,
         "filtered_reviews": review_count,
         "average_rating": float(df["review_rating_num"].mean()) if review_count else 0,
         "negative_share": negative_count / review_count if review_count else 0,
+        "neutral_share": neutral_count / review_count if review_count else 0,
+        "positive_share": positive_count / review_count if review_count else 0,
+        "satisfaction_index": satisfaction_index,
         "total_agreement": float(df["agreement_count"].sum()),
         "negative_agreement": float(df["negative_agreement_weight"].sum()),
+        "date_start": dated.min().strftime("%Y-%m-%d") if not dated.empty else "",
+        "date_end": dated.max().strftime("%Y-%m-%d") if not dated.empty else "",
     }
 
 
@@ -358,6 +425,28 @@ def source_distribution(df: pd.DataFrame, limit: int = 10) -> pd.DataFrame:
     return out
 
 
+def categorical_sentiment_breakdown(
+    df: pd.DataFrame,
+    column: str,
+    label: str,
+    *,
+    limit: int = 12,
+) -> pd.DataFrame:
+    if column not in df.columns:
+        return pd.DataFrame(columns=[label, "Reviews", "Negative", "Neutral", "Positive", "Negative share"])
+
+    grouped = (
+        df.groupby([column, "Final_Label"])
+        .size()
+        .unstack(fill_value=0)
+        .reindex(columns=SENTIMENT_ORDER, fill_value=0)
+    )
+    grouped["Reviews"] = grouped[SENTIMENT_ORDER].sum(axis=1)
+    grouped["Negative share"] = (grouped["Negative"] / grouped["Reviews"]).fillna(0)
+    out = grouped.reset_index().rename(columns={column: label})
+    return out.sort_values(["Reviews", "Negative"], ascending=False).head(limit)
+
+
 def aspect_priority(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for aspect, column in ASPECT_COLUMNS.items():
@@ -386,6 +475,165 @@ def aspect_priority(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(
         ["Priority score", "Negative"],
         ascending=False,
+    )
+
+
+def root_cause_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    priority = aspect_priority(df)
+    rows = []
+    for _, row in priority.iterrows():
+        aspect = row["Aspect"]
+        severity = risk_level(row["Negative share"], row["Negative"], row["Negative agreement"])
+        rows.append(
+            {
+                "Problem": root_cause_problem(aspect),
+                "Related aspect": aspect,
+                "Frequency": int(row["Negative"]),
+                "Mentions": int(row["Mentions"]),
+                "Negative share": float(row["Negative share"]),
+                "Agreement evidence": int(row["Negative agreement"]),
+                "Severity": severity,
+                "Interpretation": root_cause_interpretation(aspect, row, severity),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def risk_level(negative_share: float, negative_count: float, agreement: float) -> str:
+    if negative_share >= 0.45 and negative_count >= 250 and agreement >= 1000:
+        return "Critical"
+    if negative_share >= 0.35 and (negative_count >= 150 or agreement >= 500):
+        return "High"
+    if negative_share >= 0.2 and negative_count >= 75:
+        return "Medium"
+    return "Low"
+
+
+def root_cause_problem(aspect: str) -> str:
+    return {
+        "Crowding & Comfort": "Peak-hour crowding and travel comfort pressure",
+        "Fare & Payment System": "Fare, ticketing, Rabbit Card, or payment friction",
+        "Infrastructure & Facilities": "Station facility, access, AC, escalator, or platform issue",
+        "Route Coverage & Connectivity": "Transfer clarity or network connectivity gap",
+        "Staff & Customer Service": "Staff support or service consistency issue",
+        "Punctuality & Reliability": "Waiting time, delay, or reliability concern",
+        "Cleanliness & Hygiene": "Cleanliness and station hygiene concern",
+        "Safety & Security": "Safety, security, or crowd-control concern",
+        "Signage & Navigation": "Wayfinding, signage, or navigation confusion",
+        "Overall Experience": "General BTS experience dissatisfaction",
+    }.get(aspect, f"{aspect} operational issue")
+
+
+def root_cause_interpretation(aspect: str, row: pd.Series, severity: str) -> str:
+    return (
+        f"{aspect} is rated {severity.lower()} because {int(row['Negative']):,} of "
+        f"{int(row['Mentions']):,} mentioned reviews are negative "
+        f"({float(row['Negative share']):.1%}) and those complaints collect "
+        f"{int(row['Negative agreement']):,} agreement points."
+    )
+
+
+def recent_period_comparison(df: pd.DataFrame, frequency: str = "M") -> dict[str, object]:
+    trend = sentiment_time_series(df, frequency)
+    if trend.empty:
+        return {}
+
+    pivot = (
+        trend.pivot_table(index="Period", columns="Sentiment", values="Reviews", aggfunc="sum")
+        .reindex(columns=SENTIMENT_ORDER, fill_value=0)
+        .sort_index()
+    )
+    if len(pivot) < 2:
+        return {}
+
+    previous = pivot.iloc[-2]
+    current = pivot.iloc[-1]
+    previous_total = previous.sum()
+    current_total = current.sum()
+    previous_negative_share = previous["Negative"] / previous_total if previous_total else 0
+    current_negative_share = current["Negative"] / current_total if current_total else 0
+    return {
+        "previous_period": pivot.index[-2].strftime("%Y-%m-%d"),
+        "current_period": pivot.index[-1].strftime("%Y-%m-%d"),
+        "previous_reviews": int(previous_total),
+        "current_reviews": int(current_total),
+        "previous_negative_share": float(previous_negative_share),
+        "current_negative_share": float(current_negative_share),
+        "negative_share_change": float(current_negative_share - previous_negative_share),
+        "negative_count_change": int(current["Negative"] - previous["Negative"]),
+        "positive_count_change": int(current["Positive"] - previous["Positive"]),
+    }
+
+
+def negative_spikes(df: pd.DataFrame, frequency: str = "M", *, limit: int = 5) -> pd.DataFrame:
+    trend = sentiment_time_series(df, frequency)
+    if trend.empty:
+        return pd.DataFrame(columns=["Period", "Negative reviews", "Negative share", "Spike score"])
+
+    negative = trend[trend["Sentiment"].eq("Negative")].copy()
+    if negative.empty:
+        return pd.DataFrame(columns=["Period", "Negative reviews", "Negative share", "Spike score"])
+
+    negative["Rolling mean"] = negative["Reviews"].rolling(3, min_periods=1).mean().shift(1)
+    negative["Spike score"] = (negative["Reviews"] - negative["Rolling mean"]).fillna(0)
+    out = negative[negative["Spike score"].gt(0)].copy()
+    out = out.sort_values(["Spike score", "Reviews"], ascending=False).head(limit)
+    return out.rename(
+        columns={
+            "Reviews": "Negative reviews",
+            "Share": "Negative share",
+        }
+    )[["Period", "Negative reviews", "Negative share", "Spike score"]]
+
+
+def aspect_recent_changes(df: pd.DataFrame, frequency: str = "M") -> pd.DataFrame:
+    rows = []
+    for aspect in ASPECT_COLUMNS:
+        trend = aspect_sentiment_time_series(df, aspect, frequency)
+        if trend.empty:
+            continue
+        pivot = (
+            trend.pivot_table(index="Period", columns="Sentiment", values="Reviews", aggfunc="sum")
+            .reindex(columns=SENTIMENT_ORDER, fill_value=0)
+            .sort_index()
+        )
+        if len(pivot) < 2:
+            continue
+        previous = pivot.iloc[-2]
+        current = pivot.iloc[-1]
+        previous_total = previous.sum()
+        current_total = current.sum()
+        previous_negative_share = previous["Negative"] / previous_total if previous_total else 0
+        current_negative_share = current["Negative"] / current_total if current_total else 0
+        rows.append(
+            {
+                "Aspect": aspect,
+                "Previous negative share": float(previous_negative_share),
+                "Current negative share": float(current_negative_share),
+                "Negative share change": float(current_negative_share - previous_negative_share),
+                "Negative count change": int(current["Negative"] - previous["Negative"]),
+                "Current mentions": int(current_total),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("Negative share change", ascending=False)
+
+
+def keyword_frequency(
+    df: pd.DataFrame,
+    *,
+    sentiment: str,
+    limit: int = 20,
+    min_length: int = 4,
+) -> pd.DataFrame:
+    subset = df[df["Final_Label"].eq(sentiment)]
+    words: Counter[str] = Counter()
+    for text in subset["full_review_text"].fillna("").astype(str):
+        for word in re.findall(r"[A-Za-z][A-Za-z']+", text.lower()):
+            word = word.strip("'")
+            if len(word) >= min_length and word not in STOPWORDS:
+                words[word] += 1
+    return pd.DataFrame(
+        [{"Keyword": word, "Count": count} for word, count in words.most_common(limit)]
     )
 
 
@@ -458,9 +706,11 @@ def aspect_evidence_reviews(
 
 def review_table(df: pd.DataFrame, *, limit: int = 200) -> pd.DataFrame:
     columns = [
+        "review_date_ui",
         "review_title_display",
         "text_snippet",
         "source_display",
+        "bts_line_display",
         "review_rating_num",
         "agreement_count",
         "primary_aspect",
@@ -469,9 +719,11 @@ def review_table(df: pd.DataFrame, *, limit: int = 200) -> pd.DataFrame:
     ]
     out = df.head(limit)[columns].rename(
         columns={
+            "review_date_ui": "Date",
             "review_title_display": "Title",
             "text_snippet": "Review snippet",
             "source_display": "Source",
+            "bts_line_display": "BTS line",
             "review_rating_num": "Rating",
             "agreement_count": "Agreement count",
             "primary_aspect": "Primary aspect",

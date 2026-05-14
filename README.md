@@ -1,17 +1,17 @@
 # BTS Skytrain ABSA Business Dashboard
 
-Streamlit business dashboard for the final exam topic:
+Static HTML/JavaScript business dashboard for the final exam topic:
 
 **Enhancing BTS Skytrain Services through Aspect-Based Sentiment Analysis of Passenger Reviews**
 
-The dashboard uses `full_dataset_with_predictions.csv` as its single input and shows:
+The final dashboard is generated from `full_dataset_with_predictions.csv` and does **not** require Streamlit. It shows:
 
-- executive KPIs for service-relevant reviews,
-- sentiment trends by selected date range,
-- ABSA service-aspect priority ranking,
-- rating vs. agreement separation,
-- operational recommendations backed by review evidence,
-- searchable passenger review explorer.
+- overall sentiment from `Final_Label`,
+- sentiment distribution for every ABSA service aspect,
+- monthly sentiment trend for each selected aspect,
+- aspect priority ranking,
+- high-agreement complaint evidence,
+- a dedicated Business Suggestions tab with numeric evidence and written conclusions for each recommendation.
 
 Detailed explanations for each analysis section are in
 [`docs/analysis_explanation.md`](docs/analysis_explanation.md).
@@ -21,54 +21,45 @@ A table-by-table and chart-by-chart observation guide is in
 
 ## Core Data Rule
 
-`review_rating_num` is the 1-5 sentiment-derived rating.
+`Final_Label` is the final overall sentiment of the whole review.
 
-`like_count` is preserved separately as `agreement_count`, so Reddit upvotes or platform engagement measure how many people agree with or engage with a complaint. A high-upvote negative review is not treated as a 5-star review.
+Aspect-based sentiment uses the `sentiment_*` columns:
 
-## Run Locally
+- `sentiment_fare_payment` for fare, payment, and price-related feedback,
+- `sentiment_crowding` for crowding and comfort,
+- `sentiment_infrastructure` for facilities,
+- `sentiment_route_connectivity` for route and connectivity,
+- `sentiment_overall` for the ABSA aspect **Overall Experience**.
+
+`sentiment_overall` is an aspect-level field. It is not the same thing as the global overall sentiment.
+
+`review_rating_num` is the 1-5 sentiment-derived rating. `like_count` is preserved separately as `agreement_count`, so high-upvote complaints stay negative complaints with stronger evidence weight.
+
+## Build Locally
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m streamlit run app.py
+python build_static_site.py
+```
+
+Open:
+
+```text
+docs/index.html
 ```
 
 ## Deploy
 
-This repository supports three deployment paths:
+The dashboard is deployed as a static GitHub Pages site.
 
-1. **Streamlit Community Cloud**
+The workflow in `.github/workflows/deploy-pages.yml` verifies the data contract, builds `docs/index.html`, and deploys the generated static dashboard.
 
-   Use these settings when creating or updating the Streamlit deployment:
+Expected URL after the workflow finishes:
 
-   - Repository: `ngxupaul/dashboard`
-   - Branch: `main`
-   - Main file path: `app.py`
-   - Python dependencies: `requirements.txt`
-   - App config: `.streamlit/config.toml`
+<https://ngxupaul.github.io/dashboard/>
 
-   After the app is connected to Streamlit Community Cloud, every push to `main`
-   redeploys the full interactive Streamlit dashboard automatically.
-
-2. **GitHub Pages static dashboard**
-
-   The workflow in `.github/workflows/deploy-pages.yml` verifies the data contract, builds `docs/index.html`, and deploys a static business dashboard snapshot.
-
-   Expected URL after the workflow finishes:
-
-   <https://ngxupaul.github.io/dashboard/>
-
-   One-time GitHub setting if the URL returns 404:
-   open repository **Settings -> Pages**, choose **Deploy from a branch**, select `gh-pages` and `/ (root)`, then save.
-
-3. **Full Streamlit app in GitHub Codespaces**
-
-   Open the repository in Codespaces, wait for dependencies to install, then run:
-
-   ```bash
-   python -m streamlit run app.py
-   ```
-
-   Codespaces will forward port `8501` and open the Streamlit dashboard.
+One-time GitHub setting if the URL returns 404:
+open repository **Settings -> Pages**, choose **Deploy from a branch**, select `gh-pages` and `/ (root)`, then save.
 
 ## Verify
 

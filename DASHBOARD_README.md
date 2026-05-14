@@ -1,13 +1,15 @@
 # BTS Skytrain ABSA Business Dashboard
 
-This Streamlit dashboard turns `full_dataset_with_predictions.csv` into a final-exam business UI for:
+This project now uses a static HTML/JavaScript dashboard generated from `full_dataset_with_predictions.csv`. The final dashboard does not need Streamlit.
 
-- service pain-point prioritization,
-- aspect-based sentiment analysis,
-- time-range filtering with monthly, quarterly, and yearly sentiment trend charts,
-- rating vs. agreement separation,
-- operational action evidence,
-- searchable passenger review examples.
+It includes:
+
+- overall sentiment distribution from `Final_Label`,
+- aspect-based sentiment distribution for every `sentiment_*` service aspect,
+- monthly sentiment trend by selected aspect,
+- priority ranking based on negative volume and agreement weight,
+- high-agreement low-rating evidence reviews,
+- a dedicated Business Suggestions tab with written recommendations, supporting numbers, evidence snippets, and conclusions.
 
 For section-by-section analysis notes, see
 [`docs/analysis_explanation.md`](docs/analysis_explanation.md).
@@ -15,32 +17,22 @@ For section-by-section analysis notes, see
 For table-by-table and chart-by-chart reading guidance, see
 [`docs/dashboard_observation_guide.md`](docs/dashboard_observation_guide.md).
 
-## Run
+## Build
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m streamlit run app.py
+python build_static_site.py
 ```
 
-If your default `python` is not available on Windows, use the Python executable installed for your environment.
+The generated dashboard is:
+
+```text
+docs/index.html
+```
 
 ## Deployment
 
-### Streamlit Community Cloud
-
-Use these settings for the full interactive dashboard:
-
-- Repository: `ngxupaul/dashboard`
-- Branch: `main`
-- Main file path: `app.py`
-- Python dependencies: `requirements.txt`
-- App config: `.streamlit/config.toml`
-
-After the Streamlit app is connected to this repository, pushing to `main` updates the deployed app automatically.
-
-### GitHub Pages Static Snapshot
-
-The repository includes a GitHub Pages workflow that builds a static business snapshot from the same CSV:
+The GitHub Pages workflow builds and publishes the static dashboard:
 
 ```powershell
 python build_static_site.py
@@ -52,15 +44,11 @@ After pushing to `main`, GitHub Actions deploys it to:
 
 If that URL returns 404, enable Pages once in GitHub: **Settings -> Pages -> Deploy from a branch -> `gh-pages` -> `/ (root)`**.
 
-### GitHub Codespaces
-
-For the full Streamlit app on GitHub, use GitHub Codespaces and run:
-
-```bash
-python -m streamlit run app.py
-```
-
 ## Data Rule
+
+`Final_Label` is the global review sentiment.
+
+`sentiment_overall` is not global overall sentiment. It is the ABSA field for the `Overall Experience` aspect.
 
 `review_rating_num` is the 1-5 sentiment-derived rating. `like_count` is kept as `agreement_count`, so Reddit upvotes are analyzed as how many people agreed with or engaged with a review, not as star ratings.
 

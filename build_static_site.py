@@ -1,15 +1,31 @@
 from __future__ import annotations
 
 import json
+from html import escape
 from pathlib import Path
 
+import pandas as pd
+
 from dashboard_data import (
+    ACTION_ASPECTS,
+    ASPECT_ACTIONS,
+    ASPECT_COLUMNS,
     DATA_PATH,
+    aspect_evidence_reviews,
     aspect_priority,
+    aspect_recent_changes,
+    aspect_sentiment_time_series,
+    categorical_sentiment_breakdown,
     filter_dataset,
     high_agreement_low_rating,
+    keyword_frequency,
     kpi_summary,
     load_dataset,
+    model_agreement,
+    negative_spikes,
+    recent_period_comparison,
+    review_table,
+    root_cause_matrix,
     sentiment_distribution,
     sentiment_time_series,
 )
@@ -18,40 +34,234 @@ from dashboard_data import (
 DOCS_DIR = Path(__file__).with_name("docs")
 OUT_PATH = DOCS_DIR / "index.html"
 
+TIME_FREQUENCIES = {
+    "daily": "D",
+    "weekly": "W",
+    "monthly": "M",
+    "quarterly": "Q",
+}
+
+ASPECT_LABELS = {
+    "Fare & Payment System": "Fare & Payment (Price)",
+}
+
 
 def main() -> None:
     df = load_dataset(DATA_PATH)
     service_df = filter_dataset(df, service_relevant_only=True)
 
-    summary = kpi_summary(service_df, total_rows=len(df))
-    sentiment = sentiment_distribution(service_df)
-    priority = aspect_priority(service_df).head(10)
-    trend = sentiment_time_series(service_df, "M")
-    if not trend.empty:
-        cutoff = trend["Period"].max() - __import__("pandas").DateOffset(months=35)
-        trend = trend[trend["Period"].ge(cutoff)]
+    priority = add_aspect_labels(aspect_priority(service_df))
+    root_causes = root_cause_matrix(service_df)
+    root_causes["Aspect label"] = root_causes["Related aspect"].map(aspect_label)
 
-    complaints = high_agreement_low_rating(
-        service_df,
-        min_agreement=20,
-        max_rating=2,
-        limit=12,
-    )
+    agreement, model_pairs = model_agreement(service_df)
+    summary = kpi_summary(service_df, total_rows=len(df))
+    summary.update(executive_summary(priority, agreement))
 
     payload = {
-        "sentiment": sentiment.to_dict("records"),
-        "priority": priority[
-            ["Aspect", "Negative", "Positive", "Negative agreement", "Priority score"]
-        ].to_dict("records"),
-        "trend": _json_records(trend),
+        "summary": summary,
+        "sentiment": sentiment_distribution(service_df).to_dict("records"),
+        "timeSeries": {
+            key: _json_records(recent_periods(sentiment_time_series(service_df, freq), key))
+            for key, freq in TIME_FREQUENCIES.items()
+        },
+        "aspectTrends": {
+            key: {
+                aspect: _json_records(
+                    recent_periods(aspect_sentiment_time_series(service_df, aspect, freq), key)
+                )
+                for aspect in ASPECT_COLUMNS
+            }
+            for key, freq in TIME_FREQUENCIES.items()
+        },
+        "periodComparison": recent_period_comparison(service_df, "M"),
+        "negativeSpikes": _json_records(negative_spikes(service_df, "M", limit=6)),
+        "aspectChanges": add_aspect_labels(aspect_recent_changes(service_df, "M")).to_dict("records"),
+        "aspectDistribution": aspect_distribution_records(priority),
+        "priority": priority_table_records(priority),
+        "rootCauses": root_causes.to_dict("records"),
+        "sourceBreakdown": categorical_sentiment_breakdown(
+            service_df,
+            "source_display",
+            "Source",
+            limit=10,
+        ).to_dict("records"),
+        "lineBreakdown": categorical_sentiment_breakdown(
+            service_df,
+            "bts_line_display",
+            "BTS line",
+            limit=10,
+        ).to_dict("records"),
+        "negativeKeywords": keyword_frequency(service_df, sentiment="Negative", limit=16).to_dict("records"),
+        "positiveKeywords": keyword_frequency(service_df, sentiment="Positive", limit=16).to_dict("records"),
+        "recommendations": business_recommendations(service_df, priority),
+        "modelPairs": model_pairs.head(10).to_dict("records"),
+        "reviews": _json_records(
+            review_table(
+                service_df.sort_values(["agreement_count", "review_rating_num"], ascending=[False, True]),
+                limit=800,
+            )
+        ),
+        "evidenceComplaints": _json_records(
+            high_agreement_low_rating(service_df, min_agreement=20, max_rating=2, limit=18)
+        ),
     }
 
     DOCS_DIR.mkdir(exist_ok=True)
-    OUT_PATH.write_text(render_html(summary, payload, complaints), encoding="utf-8")
+    OUT_PATH.write_text(render_html(payload), encoding="utf-8")
     print(f"Wrote {OUT_PATH}")
 
 
-def render_html(summary: dict[str, float], payload: dict, complaints) -> str:
+def add_aspect_labels(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["Aspect label"] = out["Aspect"].map(aspect_label)
+    return out
+
+
+def aspect_label(aspect: str) -> str:
+    return ASPECT_LABELS.get(aspect, aspect)
+
+
+def recent_periods(df: pd.DataFrame, grain: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    months = {
+        "daily": 6,
+        "weekly": 18,
+        "monthly": 36,
+        "quarterly": 72,
+    }[grain]
+    cutoff = df["Period"].max() - pd.DateOffset(months=months)
+    return df[df["Period"].ge(cutoff)].copy()
+
+
+def executive_summary(priority: pd.DataFrame, agreement: float) -> dict[str, object]:
+    worst = priority.iloc[0]
+    positive = priority.assign(
+        PositiveShare=lambda data: data["Positive"]
+        / data[["Negative", "Neutral", "Positive"]].sum(axis=1).replace(0, 1)
+    ).sort_values(["PositiveShare", "Positive"], ascending=False)
+    best = positive.iloc[0]
+    return {
+        "model_agreement": agreement,
+        "highest_risk_aspect": worst["Aspect label"],
+        "highest_risk_negative_share": float(worst["Negative share"]),
+        "highest_risk_negative": int(worst["Negative"]),
+        "best_aspect": best["Aspect label"],
+        "best_aspect_positive_share": float(best["PositiveShare"]),
+        "best_aspect_positive": int(best["Positive"]),
+    }
+
+
+def aspect_distribution_records(priority: pd.DataFrame) -> list[dict]:
+    out = priority.copy()
+    totals = out[["Negative", "Neutral", "Positive"]].sum(axis=1).replace(0, 1)
+    out["Negative share"] = out["Negative"] / totals
+    out["Neutral share"] = out["Neutral"] / totals
+    out["Positive share"] = out["Positive"] / totals
+    return out[
+        [
+            "Aspect",
+            "Aspect label",
+            "Mentions",
+            "Negative",
+            "Neutral",
+            "Positive",
+            "Negative share",
+            "Neutral share",
+            "Positive share",
+            "Negative agreement",
+            "Priority score",
+        ]
+    ].to_dict("records")
+
+
+def priority_table_records(priority: pd.DataFrame) -> list[dict]:
+    return priority[
+        [
+            "Aspect",
+            "Aspect label",
+            "Mentions",
+            "Negative",
+            "Neutral",
+            "Positive",
+            "Negative agreement",
+            "Priority score",
+            "Negative share",
+        ]
+    ].to_dict("records")
+
+
+def business_recommendations(service_df: pd.DataFrame, priority: pd.DataFrame) -> list[dict]:
+    rows = priority.set_index("Aspect")
+    recommendations = []
+    for aspect in ACTION_ASPECTS:
+        row = rows.loc[aspect]
+        actions = ASPECT_ACTIONS[aspect]
+        evidence = aspect_evidence_reviews(service_df, aspect, limit=2)
+        snippets = evidence["Review snippet"].tolist() if not evidence.empty else []
+        recommendations.append(
+            {
+                "aspect": aspect,
+                "aspectLabel": aspect_label(aspect),
+                "problem": actions["goal"],
+                "priority": recommendation_priority(row),
+                "businessImpact": business_impact(aspect),
+                "actions": actions["actions"],
+                "successMetrics": actions["metrics"],
+                "evidenceReviews": snippets,
+                "numbers": {
+                    "mentions": int(row["Mentions"]),
+                    "negative": int(row["Negative"]),
+                    "neutral": int(row["Neutral"]),
+                    "positive": int(row["Positive"]),
+                    "negativeShare": float(row["Negative share"]),
+                    "negativeAgreement": int(row["Negative agreement"]),
+                    "priorityScore": float(row["Priority score"]),
+                },
+                "interpretation": recommendation_interpretation(aspect, row),
+                "conclusion": recommendation_conclusion(aspect, row),
+            }
+        )
+    return recommendations
+
+
+def recommendation_priority(row: pd.Series) -> str:
+    share = float(row["Negative share"])
+    negative = int(row["Negative"])
+    agreement = int(row["Negative agreement"])
+    if share >= 0.45 and negative >= 250 and agreement >= 1000:
+        return "Critical"
+    if share >= 0.35 or negative >= 250 or agreement >= 1000:
+        return "High"
+    return "Medium"
+
+
+def business_impact(aspect: str) -> str:
+    return {
+        "Crowding & Comfort": "Crowded and uncomfortable trips weaken perceived reliability during high-demand periods.",
+        "Fare & Payment System": "Payment friction increases station stress and can make the service feel less accessible to tourists and occasional riders.",
+        "Infrastructure & Facilities": "Facility issues reduce comfort, accessibility, and confidence in station operations.",
+        "Route Coverage & Connectivity": "Transfer confusion and connectivity gaps can reduce network usefulness even when trains are available.",
+    }.get(aspect, "The issue can reduce passenger satisfaction and repeat usage.")
+
+
+def recommendation_interpretation(aspect: str, row: pd.Series) -> str:
+    return (
+        f"{aspect_label(aspect)} should be treated as an operational signal because "
+        f"{int(row['Negative']):,} of {int(row['Mentions']):,} mentioned reviews are negative "
+        f"({float(row['Negative share']):.1%})."
+    )
+
+
+def recommendation_conclusion(aspect: str, row: pd.Series) -> str:
+    return (
+        f"Prioritize {aspect_label(aspect).lower()} improvements because the issue has both "
+        f"complaint volume and {int(row['Negative agreement']):,} agreement points behind negative reviews."
+    )
+
+
+def render_html(payload: dict) -> str:
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -62,14 +272,18 @@ def render_html(summary: dict[str, float], payload: dict, complaints) -> str:
   <style>
     :root {{
       color-scheme: light;
-      --ink: #101820;
-      --muted: #5d6673;
-      --line: #d8dee4;
-      --teal: #0f4c5c;
-      --green: #1f8a70;
-      --red: #c43c35;
-      --gray: #8a8f98;
-      --bg: #f6f8fb;
+      --ink: #17202a;
+      --muted: #667085;
+      --line: #d7dde7;
+      --panel: #ffffff;
+      --bg: #eef2f6;
+      --navy: #111827;
+      --blue: #2563eb;
+      --green: #138a63;
+      --red: #c24132;
+      --gray: #8a94a6;
+      --amber: #b7791f;
+      --purple: #7c3aed;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -78,71 +292,171 @@ def render_html(summary: dict[str, float], payload: dict, complaints) -> str:
       font-family: Inter, Segoe UI, Arial, sans-serif;
       margin: 0;
     }}
-    header {{
-      background: var(--teal);
-      border-bottom: 1px solid #0b3f4c;
-      color: #ffffff;
-      padding: 28px max(24px, calc((100vw - 1180px) / 2));
+    .shell {{
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr);
+      min-height: 100vh;
     }}
-    header h1 {{
-      font-size: clamp(28px, 4vw, 44px);
+    aside {{
+      background: var(--navy);
+      color: #fff;
+      padding: 24px 20px;
+    }}
+    .brand h1 {{
+      color: #fff;
+      font-size: 26px;
+      letter-spacing: 0;
+      line-height: 1.12;
+      margin: 0;
+    }}
+    .brand p, .sidebar-note {{
+      color: #cbd5e1;
+      font-size: 13px;
+      line-height: 1.55;
+    }}
+    .nav {{
+      display: grid;
+      gap: 8px;
+      margin-top: 24px;
+    }}
+    .tab-button {{
+      background: transparent;
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: 8px;
+      color: #dbe4f0;
+      cursor: pointer;
+      font: inherit;
+      padding: 10px 11px;
+      text-align: left;
+    }}
+    .tab-button.active {{
+      background: #fff;
+      border-color: #fff;
+      color: var(--navy);
+      font-weight: 750;
+    }}
+    .sidebar-note {{
+      border-top: 1px solid rgba(255,255,255,.14);
+      margin-top: 24px;
+      padding-top: 16px;
+    }}
+    main {{
+      min-width: 0;
+      padding: 24px;
+    }}
+    .page-head {{
+      align-items: end;
+      display: flex;
+      gap: 16px;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }}
+    .page-head h2 {{
+      font-size: 30px;
       letter-spacing: 0;
       margin: 0;
     }}
-    header p {{
-      color: #e8f3f1;
-      font-size: 17px;
-      line-height: 1.5;
-      margin: 10px 0 0;
-      max-width: 920px;
-    }}
-    main {{
-      display: grid;
-      gap: 22px;
-      margin: 0 auto;
-      max-width: 1180px;
-      padding: 24px;
-    }}
-    .notice, .panel, .metric {{
-      background: #ffffff;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      box-shadow: 0 1px 2px rgba(16, 24, 32, 0.05);
-    }}
-    .notice {{
-      border-left: 5px solid var(--teal);
+    .page-head p {{
       color: var(--muted);
-      line-height: 1.55;
-      padding: 16px 18px;
+      line-height: 1.5;
+      margin: 6px 0 0;
+      max-width: 840px;
+    }}
+    .pill {{
+      background: #dbeafe;
+      border: 1px solid #bfdbfe;
+      border-radius: 999px;
+      color: #1d4ed8;
+      font-size: 13px;
+      font-weight: 750;
+      padding: 8px 12px;
+      white-space: nowrap;
     }}
     .metrics {{
       display: grid;
-      gap: 14px;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      margin-bottom: 18px;
     }}
-    .metric {{ padding: 16px; }}
+    .metric, .panel, .recommendation, .insight {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(17,24,39,.04);
+    }}
+    .metric {{
+      min-height: 104px;
+      padding: 14px;
+    }}
     .metric small {{
       color: var(--muted);
       display: block;
       font-size: 12px;
       font-weight: 750;
-      letter-spacing: 0.04em;
+      letter-spacing: .04em;
       text-transform: uppercase;
     }}
     .metric strong {{
       display: block;
-      font-size: clamp(24px, 3vw, 34px);
+      font-size: clamp(22px, 2.4vw, 32px);
       margin-top: 6px;
+    }}
+    .metric span {{
+      color: var(--muted);
+      display: block;
+      font-size: 13px;
+      line-height: 1.35;
+      margin-top: 4px;
     }}
     .grid {{
       display: grid;
-      gap: 22px;
+      gap: 16px;
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }}
-    .panel {{ min-height: 360px; padding: 18px; }}
+    .grid-3 {{
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }}
+    .panel {{
+      min-height: 360px;
+      overflow: hidden;
+      padding: 18px;
+    }}
     .wide {{ grid-column: 1 / -1; }}
-    h2 {{ font-size: 20px; margin: 0 0 16px; }}
-    canvas {{ max-height: 310px; }}
+    .panel h3, .recommendation h3, .insight h3 {{
+      font-size: 18px;
+      margin: 0 0 10px;
+    }}
+    .panel p, .explain, .recommendation p, .insight p {{
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+      margin: 0 0 12px;
+    }}
+    .canvas-box {{
+      height: 310px;
+      position: relative;
+    }}
+    .canvas-box.tall {{ height: 430px; }}
+    .control-row {{
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 14px;
+    }}
+    select, input {{
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--ink);
+      font: inherit;
+      min-height: 40px;
+      padding: 8px 10px;
+    }}
+    select {{ min-width: 230px; }}
+    input {{ min-width: 210px; }}
     table {{
       border-collapse: collapse;
       font-size: 14px;
@@ -150,93 +464,668 @@ def render_html(summary: dict[str, float], payload: dict, complaints) -> str:
     }}
     th, td {{
       border-bottom: 1px solid var(--line);
-      padding: 11px 9px;
+      padding: 9px 8px;
       text-align: left;
       vertical-align: top;
     }}
-    th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; }}
-    .snippet {{ color: var(--muted); line-height: 1.45; }}
+    th {{
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+    }}
+    .snippet {{
+      color: var(--muted);
+      line-height: 1.45;
+      max-width: 620px;
+    }}
+    .tab-panel {{ display: none; }}
+    .tab-panel.active {{ display: block; }}
+    .recommendations {{
+      display: grid;
+      gap: 14px;
+    }}
+    .recommendation {{
+      border-left: 5px solid var(--blue);
+      padding: 16px;
+    }}
+    .recommendation .meta {{
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      margin-bottom: 8px;
+    }}
+    .recommendation .priority {{
+      color: var(--ink);
+      font-weight: 750;
+    }}
+    .insight {{
+      padding: 16px;
+    }}
+    .risk {{
+      display: inline-block;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 750;
+      padding: 4px 8px;
+    }}
+    .risk.Critical {{ background: #fee2e2; color: #991b1b; }}
+    .risk.High {{ background: #ffedd5; color: #9a3412; }}
+    .risk.Medium {{ background: #fef3c7; color: #92400e; }}
+    .risk.Low {{ background: #dcfce7; color: #166534; }}
+    .review-count {{
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 12px;
+    }}
     .footer {{
       color: var(--muted);
       font-size: 13px;
-      line-height: 1.5;
+      margin-top: 20px;
       text-align: center;
     }}
-    @media (max-width: 920px) {{
-      .metrics, .grid {{ grid-template-columns: 1fr; }}
-      main {{ padding: 16px; }}
+    @media (max-width: 1120px) {{
+      .shell {{ grid-template-columns: 1fr; }}
+      aside {{ position: static; }}
+      .nav {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .metrics, .grid, .grid-3 {{ grid-template-columns: 1fr; }}
+      .page-head {{ align-items: start; flex-direction: column; }}
     }}
   </style>
 </head>
 <body>
-  <header>
-    <h1>BTS Skytrain Business Intelligence</h1>
-    <p>Static GitHub Pages snapshot of the ABSA dashboard. The full interactive Streamlit app is in the same repository and can run in Codespaces or locally.</p>
-  </header>
-  <main>
-    <section class="notice">
-      <b>Rating and agreement are decoupled.</b>
-      <code>review_rating_num</code> is the 1-5 sentiment-derived rating.
-      <code>like_count</code> is shown as agreement count, so a high-upvote complaint stays a complaint.
-    </section>
-    <section class="metrics">
-      {metric("Total reviews", summary["total_reviews"], "Raw CSV rows")}
-      {metric("Service reviews", summary["filtered_reviews"], "Default BTS scope")}
-      {metric("Average rating", f"{summary['average_rating']:.2f}", "Sentiment stars")}
-      {metric("Negative share", f"{summary['negative_share']:.1%}", "Final_Label negative")}
-      {metric("Agreement", summary["total_agreement"], "Upvotes/helpful votes")}
-    </section>
-    <section class="grid">
-      <article class="panel"><h2>Overall sentiment</h2><canvas id="sentimentChart"></canvas></article>
-      <article class="panel"><h2>Top service priorities</h2><canvas id="priorityChart"></canvas></article>
-      <article class="panel wide"><h2>Sentiment over time</h2><canvas id="trendChart"></canvas></article>
-      <article class="panel"><h2>Business interpretation</h2>
-        <p class="snippet">Priority score = negative review count + 0.1 x negative agreement count. This highlights service aspects that are both frequent and strongly agreed with by passengers.</p>
-        <p class="snippet">The sentiment trend uses monthly labels in YYYY-MM format so the rise and fall of negative, neutral, and positive reviews can be read by review month.</p>
-        <p class="snippet">The top default issues are crowding, fare/payment, infrastructure, and route/connectivity.</p>
-      </article>
-      <article class="panel wide"><h2>High-agreement low-rating complaints</h2>{complaint_table(complaints)}</article>
-    </section>
-    <p class="footer">Generated from <code>full_dataset_with_predictions.csv</code>. For full filters and review explorer, run <code>python -m streamlit run app.py</code>.</p>
-  </main>
+  <div class="shell">
+    <aside>
+      <div class="brand">
+        <h1>BTS Skytrain ABSA Business Dashboard</h1>
+        <p>Generated from <code>full_dataset_with_predictions.csv</code>. Built for analysis, interpretation, and operational decisions.</p>
+      </div>
+      <nav class="nav" aria-label="Dashboard tabs">
+        <button class="tab-button active" data-tab="overview">Executive Overview</button>
+        <button class="tab-button" data-tab="aspects">Aspect Analysis</button>
+        <button class="tab-button" data-tab="time">Time-Based Analysis</button>
+        <button class="tab-button" data-tab="root">Root Cause BI</button>
+        <button class="tab-button" data-tab="recommendations">Resolution Center</button>
+        <button class="tab-button" data-tab="strategy">Business Suggestion</button>
+        <button class="tab-button" data-tab="explorer">Review Explorer</button>
+      </nav>
+      <div class="sidebar-note">
+        Global sentiment uses <code>Final_Label</code>. ABSA sentiment uses <code>sentiment_*</code> columns.
+        <code>like_count</code> is agreement evidence, not rating.
+      </div>
+    </aside>
+    <main>
+      <section class="tab-panel active" id="overview">
+        <div class="page-head">
+          <div>
+            <h2>Executive Overview</h2>
+            <p>High-level passenger sentiment, service risk, satisfaction, and model confidence after the default BTS-service relevance filter.</p>
+          </div>
+          <div class="pill">Scope: service-relevant reviews</div>
+        </div>
+        <section class="metrics">
+          {metric("Raw reviews", payload["summary"]["total_reviews"], "CSV rows")}
+          {metric("Service reviews", payload["summary"]["filtered_reviews"], "Default BTS scope")}
+          {metric("Positive rate", f"{payload['summary']['positive_share']:.1%}", "Final_Label positive")}
+          {metric("Negative rate", f"{payload['summary']['negative_share']:.1%}", "Final_Label negative")}
+          {metric("Satisfaction index", f"{payload['summary']['satisfaction_index']:.1f}", "Positive + 0.5 x neutral")}
+          {metric("Model agreement", f"{payload['summary']['model_agreement']:.1%}", "LR vs DistilBERT")}
+        </section>
+        <section class="grid">
+          <article class="panel">
+            <h3>Overall sentiment distribution</h3>
+            <p id="overallExplain"></p>
+            <div class="canvas-box"><canvas id="sentimentChart"></canvas></div>
+          </article>
+          <article class="panel">
+            <h3>Top service priorities</h3>
+            <p id="priorityExplain"></p>
+            <div class="canvas-box"><canvas id="priorityChart"></canvas></div>
+          </article>
+          <article class="panel wide">
+            <h3>Monthly sentiment movement</h3>
+            <p id="periodExplain"></p>
+            <div class="canvas-box"><canvas id="overallTrendChart"></canvas></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="aspects">
+        <div class="page-head">
+          <div>
+            <h2>Aspect-Based Sentiment Analysis</h2>
+            <p>Aspect sentiment uses the ABSA columns and separates service problems such as crowding, fare/payment, infrastructure, route connectivity, staff, safety, cleanliness, signage, punctuality, and overall experience.</p>
+          </div>
+          <div class="pill">ABSA aspect matrix</div>
+        </div>
+        <section class="grid">
+          <article class="panel wide">
+            <h3>Negative / Neutral / Positive by aspect</h3>
+            <p>Stacked counts show whether each service area is mainly praised, neutral, or complained about.</p>
+            <div class="canvas-box tall"><canvas id="aspectStackChart"></canvas></div>
+          </article>
+          <article class="panel">
+            <h3>Aspect drilldown</h3>
+            <div class="control-row">
+              <label for="aspectSelect">Aspect</label>
+              <select id="aspectSelect"></select>
+            </div>
+            <p id="aspectDrilldownExplain"></p>
+            <div class="canvas-box"><canvas id="selectedAspectChart"></canvas></div>
+          </article>
+          <article class="panel">
+            <h3>Priority ranking</h3>
+            <div id="aspectTable"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="time">
+        <div class="page-head">
+          <div>
+            <h2>Time-Based Analysis</h2>
+            <p>Track overall sentiment and aspect-specific sentiment by day, week, month, or quarter. The dashboard also flags recent movement and negative spikes.</p>
+          </div>
+          <div class="pill">Trend and spike detection</div>
+        </div>
+        <section class="grid">
+          <article class="panel wide">
+            <h3>Overall sentiment trend</h3>
+            <div class="control-row">
+              <label for="timeGrainSelect">Time grain</label>
+              <select id="timeGrainSelect">
+                <option value="monthly">Monthly</option>
+                <option value="weekly">Weekly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="daily">Daily</option>
+              </select>
+            </div>
+            <p id="timeExplain"></p>
+            <div class="canvas-box tall"><canvas id="timeTrendChart"></canvas></div>
+          </article>
+          <article class="panel">
+            <h3>Selected aspect trend</h3>
+            <div class="control-row">
+              <label for="trendAspectSelect">Aspect</label>
+              <select id="trendAspectSelect"></select>
+            </div>
+            <p id="aspectTrendExplain"></p>
+            <div class="canvas-box"><canvas id="aspectTrendChart"></canvas></div>
+          </article>
+          <article class="panel">
+            <h3>Negative spikes and recent changes</h3>
+            <div id="spikeTable"></div>
+            <div id="aspectChangeTable"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="root">
+        <div class="page-head">
+          <div>
+            <h2>Business Intelligence & Root Cause Analysis</h2>
+            <p>Translate sentiment into likely operational themes. These are evidence-based associations, not causal claims.</p>
+          </div>
+          <div class="pill">Operational diagnosis</div>
+        </div>
+        <section class="grid">
+          <article class="panel wide">
+            <h3>Root cause matrix</h3>
+            <div id="rootCauseTable"></div>
+          </article>
+          <article class="panel">
+            <h3>Source breakdown</h3>
+            <p>Review sources can carry different passenger segments and complaint behavior.</p>
+            <div class="canvas-box"><canvas id="sourceChart"></canvas></div>
+          </article>
+          <article class="panel">
+            <h3>BTS line breakdown</h3>
+            <p>Line-level sentiment helps identify whether risk is broad or concentrated.</p>
+            <div class="canvas-box"><canvas id="lineChart"></canvas></div>
+          </article>
+          <article class="panel">
+            <h3>Negative keywords</h3>
+            <div id="negativeKeywordTable"></div>
+          </article>
+          <article class="panel">
+            <h3>Positive keywords</h3>
+            <div id="positiveKeywordTable"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="recommendations">
+        <div class="page-head">
+          <div>
+            <h2>Recommendation & Resolution Center</h2>
+            <p>Every recommendation includes problem, evidence, business impact, action, priority, and success metric.</p>
+          </div>
+          <div class="pill">{len(payload["recommendations"])} priority blocks</div>
+        </div>
+        <section class="recommendations" id="recommendationCards"></section>
+      </section>
+
+      <section class="tab-panel" id="strategy">
+        <div class="page-head">
+          <div>
+            <h2>Business Suggestion</h2>
+            <p>Executive-level risks, opportunities, and strategic actions based on measured sentiment evidence.</p>
+          </div>
+          <div class="pill">Decision support</div>
+        </div>
+        <section class="grid-3">
+          <article class="insight">
+            <h3>Key business risks</h3>
+            <div id="riskList"></div>
+          </article>
+          <article class="insight">
+            <h3>Strategic opportunities</h3>
+            <div id="opportunityList"></div>
+          </article>
+          <article class="insight">
+            <h3>Executive recommendations</h3>
+            <div id="executiveRecommendations"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="explorer">
+        <div class="page-head">
+          <div>
+            <h2>Review Explorer</h2>
+            <p>Inspect raw review evidence behind the dashboard. This client-side explorer includes the highest-agreement service-relevant reviews.</p>
+          </div>
+          <div class="pill">Evidence table</div>
+        </div>
+        <article class="panel wide">
+          <h3>Filters</h3>
+          <div class="control-row">
+            <select id="reviewSentimentFilter"><option value="">All sentiments</option></select>
+            <select id="reviewAspectFilter"><option value="">All aspects</option></select>
+            <select id="reviewLineFilter"><option value="">All BTS lines</option></select>
+            <select id="reviewSourceFilter"><option value="">All sources</option></select>
+            <input id="reviewSearch" type="search" placeholder="Search review text">
+            <input id="reviewAgreement" type="number" min="0" value="0" title="Minimum agreement">
+          </div>
+          <p class="review-count" id="reviewCount"></p>
+          <div id="reviewTable"></div>
+        </article>
+      </section>
+
+      <p class="footer">Generated by <code>build_static_site.py</code> from <code>full_dataset_with_predictions.csv</code>.</p>
+    </main>
+  </div>
   <script>
     const dashboardData = {json.dumps(payload, ensure_ascii=False)};
-    const colors = {{ Negative: "#C43C35", Neutral: "#8A8F98", Positive: "#1F8A70" }};
-    const commonOptions = {{ responsive: true, maintainAspectRatio: false, plugins: {{ legend: {{ position: "bottom" }} }} }};
+    const colors = {{ Negative: "#C24132", Neutral: "#8A94A6", Positive: "#138A63" }};
+    const charts = {{}};
 
-    new Chart(document.getElementById("sentimentChart"), {{
+    const commonOptions = {{
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {{ legend: {{ position: "bottom" }} }}
+    }};
+
+    function number(value) {{
+      return Number(value || 0).toLocaleString();
+    }}
+
+    function percent(value) {{
+      return `${{(Number(value || 0) * 100).toFixed(1)}}%`;
+    }}
+
+    function html(value) {{
+      return String(value ?? "").replace(/[&<>"']/g, char => ({{
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }}[char]));
+    }}
+
+    function periods(records) {{
+      return [...new Set(records.map(d => d.Period))];
+    }}
+
+    function trendDatasets(records) {{
+      const labels = periods(records);
+      return ["Negative", "Neutral", "Positive"].map(sentiment => ({{
+        label: sentiment,
+        data: labels.map(period => (records.find(d => d.Period === period && d.Sentiment === sentiment) || {{ Reviews: 0 }}).Reviews),
+        borderColor: colors[sentiment],
+        backgroundColor: colors[sentiment],
+        tension: 0.25,
+        pointRadius: 2
+      }}));
+    }}
+
+    function makeTrendChart(canvasId, records) {{
+      const labels = periods(records);
+      return new Chart(document.getElementById(canvasId), {{
+        type: "line",
+        data: {{ labels, datasets: trendDatasets(records) }},
+        options: {{ ...commonOptions, scales: {{ y: {{ beginAtZero: true }} }} }}
+      }});
+    }}
+
+    function updateTrendChart(chart, records) {{
+      chart.data.labels = periods(records);
+      chart.data.datasets = trendDatasets(records);
+      chart.update();
+    }}
+
+    function renderSimpleTable(containerId, columns, rows, formatters = {{}}) {{
+      const body = rows.map(row => `<tr>${{columns.map(col => {{
+        const formatter = formatters[col];
+        const value = formatter ? formatter(row[col], row) : row[col];
+        return `<td>${{value}}</td>`;
+      }}).join("")}}</tr>`).join("");
+      document.getElementById(containerId).innerHTML =
+        `<table><thead><tr>${{columns.map(col => `<th>${{html(col)}}</th>`).join("")}}</tr></thead><tbody>${{body}}</tbody></table>`;
+    }}
+
+    function setupTabs() {{
+      document.querySelectorAll(".tab-button").forEach(button => {{
+        button.addEventListener("click", () => {{
+          document.querySelectorAll(".tab-button").forEach(item => item.classList.remove("active"));
+          document.querySelectorAll(".tab-panel").forEach(item => item.classList.remove("active"));
+          button.classList.add("active");
+          document.getElementById(button.dataset.tab).classList.add("active");
+          Object.values(charts).forEach(chart => chart.resize());
+        }});
+      }});
+    }}
+
+    function setupAspectSelectors() {{
+      const options = dashboardData.aspectDistribution
+        .map(row => `<option value="${{html(row.Aspect)}}">${{html(row["Aspect label"])}}</option>`)
+        .join("");
+      document.getElementById("aspectSelect").innerHTML = options;
+      document.getElementById("trendAspectSelect").innerHTML = options;
+      document.getElementById("aspectSelect").addEventListener("change", updateSelectedAspect);
+      document.getElementById("trendAspectSelect").addEventListener("change", updateAspectTrend);
+      document.getElementById("timeGrainSelect").addEventListener("change", updateTimeViews);
+    }}
+
+    function selectedAspect() {{
+      const value = document.getElementById("aspectSelect").value;
+      return dashboardData.aspectDistribution.find(row => row.Aspect === value) || dashboardData.aspectDistribution[0];
+    }}
+
+    function selectedTrendAspect() {{
+      const value = document.getElementById("trendAspectSelect").value;
+      return dashboardData.aspectDistribution.find(row => row.Aspect === value) || dashboardData.aspectDistribution[0];
+    }}
+
+    function updateSelectedAspect() {{
+      const row = selectedAspect();
+      charts.selectedAspect.data.labels = ["Negative", "Neutral", "Positive"];
+      charts.selectedAspect.data.datasets[0].data = [row.Negative, row.Neutral, row.Positive];
+      charts.selectedAspect.update();
+      document.getElementById("aspectDrilldownExplain").textContent =
+        `${{row["Aspect label"]}} has ${{number(row.Mentions)}} mentions. ${{number(row.Negative)}} are negative (${{percent(row["Negative share"])}}), while ${{number(row.Positive)}} are positive.`;
+    }}
+
+    function updateTimeViews() {{
+      const grain = document.getElementById("timeGrainSelect").value;
+      updateTrendChart(charts.timeTrend, dashboardData.timeSeries[grain] || []);
+      updateAspectTrend();
+      const comparison = dashboardData.periodComparison || {{}};
+      const direction = Number(comparison.negative_share_change || 0) >= 0 ? "increased" : "decreased";
+      document.getElementById("timeExplain").textContent =
+        `The latest monthly negative share ${{direction}} by ${{percent(Math.abs(comparison.negative_share_change || 0))}} versus the previous month. Use the selector to inspect daily, weekly, monthly, or quarterly movement.`;
+    }}
+
+    function updateAspectTrend() {{
+      const grain = document.getElementById("timeGrainSelect").value;
+      const row = selectedTrendAspect();
+      const records = (dashboardData.aspectTrends[grain] || {{}})[row.Aspect] || [];
+      updateTrendChart(charts.aspectTrend, records);
+      document.getElementById("aspectTrendExplain").textContent =
+        `${{row["Aspect label"]}} trend is shown at the selected time grain. The full-period split is ${{number(row.Negative)}} negative, ${{number(row.Neutral)}} neutral, and ${{number(row.Positive)}} positive.`;
+    }}
+
+    function setupExplorerFilters() {{
+      fillSelect("reviewSentimentFilter", [...new Set(dashboardData.reviews.map(r => r.Sentiment))].sort());
+      fillSelect("reviewAspectFilter", [...new Set(dashboardData.reviews.map(r => r["Primary aspect"]).filter(Boolean))].sort());
+      fillSelect("reviewLineFilter", [...new Set(dashboardData.reviews.map(r => r["BTS line"]).filter(Boolean))].sort());
+      fillSelect("reviewSourceFilter", [...new Set(dashboardData.reviews.map(r => r.Source).filter(Boolean))].sort());
+      ["reviewSentimentFilter", "reviewAspectFilter", "reviewLineFilter", "reviewSourceFilter", "reviewSearch", "reviewAgreement"]
+        .forEach(id => document.getElementById(id).addEventListener("input", renderReviews));
+    }}
+
+    function fillSelect(id, values) {{
+      const select = document.getElementById(id);
+      const first = select.querySelector("option").outerHTML;
+      select.innerHTML = first + values.map(value => `<option value="${{html(value)}}">${{html(value)}}</option>`).join("");
+    }}
+
+    function renderReviews() {{
+      const sentiment = document.getElementById("reviewSentimentFilter").value;
+      const aspect = document.getElementById("reviewAspectFilter").value;
+      const line = document.getElementById("reviewLineFilter").value;
+      const source = document.getElementById("reviewSourceFilter").value;
+      const search = document.getElementById("reviewSearch").value.trim().toLowerCase();
+      const minAgreement = Number(document.getElementById("reviewAgreement").value || 0);
+      const rows = dashboardData.reviews.filter(row =>
+        (!sentiment || row.Sentiment === sentiment) &&
+        (!aspect || row["Primary aspect"] === aspect) &&
+        (!line || row["BTS line"] === line) &&
+        (!source || row.Source === source) &&
+        Number(row["Agreement count"] || 0) >= minAgreement &&
+        (!search || `${{row.Title}} ${{row["Review snippet"]}}`.toLowerCase().includes(search))
+      );
+      document.getElementById("reviewCount").textContent = `${{number(rows.length)}} reviews match the current explorer filters. Showing top 120 by agreement and low rating.`;
+      renderSimpleTable(
+        "reviewTable",
+        ["Date", "Source", "BTS line", "Rating", "Agreement count", "Sentiment", "Primary aspect", "Review snippet"],
+        rows.slice(0, 120),
+        {{
+          "Date": value => html(value || ""),
+          "Source": value => html(value),
+          "BTS line": value => html(value),
+          "Rating": value => number(value),
+          "Agreement count": value => number(value),
+          "Sentiment": value => html(value),
+          "Primary aspect": value => html(value),
+          "Review snippet": value => `<span class="snippet">${{html(value)}}</span>`
+        }}
+      );
+    }}
+
+    function renderRecommendations() {{
+      document.getElementById("recommendationCards").innerHTML = dashboardData.recommendations.map(rec => {{
+        const nums = rec.numbers;
+        const evidence = rec.evidenceReviews.map(item => `<li>${{html(item)}}</li>`).join("");
+        const actions = rec.actions.map(item => `<li>${{html(item)}}</li>`).join("");
+        const metrics = rec.successMetrics.map(item => `<li>${{html(item)}}</li>`).join("");
+        return `<article class="recommendation">
+          <h3>${{html(rec.aspectLabel)}} <span class="risk ${{html(rec.priority)}}">${{html(rec.priority)}}</span></h3>
+          <div class="meta">${{number(nums.negative)}} negative / ${{number(nums.mentions)}} mentions (${{percent(nums.negativeShare)}}); agreement evidence ${{number(nums.negativeAgreement)}}; priority score ${{number(nums.priorityScore)}}.</div>
+          <p><b>Problem:</b> ${{html(rec.problem)}}</p>
+          <p><b>Interpretation:</b> ${{html(rec.interpretation)}}</p>
+          <p><b>Business impact:</b> ${{html(rec.businessImpact)}}</p>
+          <p><b>Business conclusion:</b> ${{html(rec.conclusion)}}</p>
+          <p><b>Suggested actions:</b></p><ul>${{actions}}</ul>
+          <p><b>Success metrics:</b></p><ul>${{metrics}}</ul>
+          <p><b>Evidence reviews:</b></p><ul>${{evidence}}</ul>
+        </article>`;
+      }}).join("");
+    }}
+
+    function renderStrategy() {{
+      const risks = dashboardData.priority.slice(0, 4).map(row =>
+        `<p><b>${{html(row["Aspect label"])}}</b>: ${{number(row.Negative)}} negative reviews, ${{percent(row["Negative share"])}} negative share, and ${{number(row["Negative agreement"])}} agreement points.</p>`
+      ).join("");
+      const opportunities = [...dashboardData.aspectDistribution]
+        .sort((a, b) => b["Positive share"] - a["Positive share"])
+        .slice(0, 4)
+        .map(row => `<p><b>${{html(row["Aspect label"])}}</b>: ${{number(row.Positive)}} positive reviews (${{percent(row["Positive share"])}} positive share). Use this strength in passenger communication and service planning.</p>`)
+        .join("");
+      const recs = dashboardData.recommendations.map(rec =>
+        `<p><b>${{html(rec.aspectLabel)}}:</b> Evidence shows ${{number(rec.numbers.negative)}} negative reviews and ${{percent(rec.numbers.negativeShare)}} negative share. Interpretation: ${{html(rec.interpretation)}} Suggested action: ${{html(rec.actions[0])}}</p>`
+      ).join("");
+      document.getElementById("riskList").innerHTML = risks;
+      document.getElementById("opportunityList").innerHTML = opportunities;
+      document.getElementById("executiveRecommendations").innerHTML = recs;
+    }}
+
+    function renderTables() {{
+      renderSimpleTable(
+        "aspectTable",
+        ["Aspect label", "Mentions", "Negative", "Neutral", "Positive", "Negative share", "Negative agreement"],
+        dashboardData.priority,
+        {{
+          "Aspect label": value => html(value),
+          "Mentions": value => number(value),
+          "Negative": value => number(value),
+          "Neutral": value => number(value),
+          "Positive": value => number(value),
+          "Negative share": value => percent(value),
+          "Negative agreement": value => number(value)
+        }}
+      );
+      renderSimpleTable(
+        "spikeTable",
+        ["Period", "Negative reviews", "Negative share", "Spike score"],
+        dashboardData.negativeSpikes,
+        {{
+          "Period": value => html(value),
+          "Negative reviews": value => number(value),
+          "Negative share": value => percent(value),
+          "Spike score": value => number(value)
+        }}
+      );
+      renderSimpleTable(
+        "aspectChangeTable",
+        ["Aspect label", "Negative share change", "Negative count change", "Current mentions"],
+        dashboardData.aspectChanges.slice(0, 5),
+        {{
+          "Aspect label": value => html(value),
+          "Negative share change": value => percent(value),
+          "Negative count change": value => number(value),
+          "Current mentions": value => number(value)
+        }}
+      );
+      renderSimpleTable(
+        "rootCauseTable",
+        ["Problem", "Aspect label", "Frequency", "Negative share", "Agreement evidence", "Severity", "Interpretation"],
+        dashboardData.rootCauses,
+        {{
+          "Problem": value => html(value),
+          "Aspect label": value => html(value),
+          "Frequency": value => number(value),
+          "Negative share": value => percent(value),
+          "Agreement evidence": value => number(value),
+          "Severity": value => `<span class="risk ${{html(value)}}">${{html(value)}}</span>`,
+          "Interpretation": value => `<span class="snippet">${{html(value)}}</span>`
+        }}
+      );
+      renderSimpleTable("negativeKeywordTable", ["Keyword", "Count"], dashboardData.negativeKeywords, {{
+        "Keyword": value => html(value),
+        "Count": value => number(value)
+      }});
+      renderSimpleTable("positiveKeywordTable", ["Keyword", "Count"], dashboardData.positiveKeywords, {{
+        "Keyword": value => html(value),
+        "Count": value => number(value)
+      }});
+    }}
+
+    setupTabs();
+    setupAspectSelectors();
+    setupExplorerFilters();
+    renderTables();
+    renderRecommendations();
+    renderStrategy();
+
+    document.getElementById("overallExplain").textContent =
+      `Global sentiment is ${{percent(dashboardData.summary.positive_share)}} positive and ${{percent(dashboardData.summary.negative_share)}} negative across ${{number(dashboardData.summary.filtered_reviews)}} BTS-service reviews.`;
+    document.getElementById("priorityExplain").textContent =
+      `${{dashboardData.summary.highest_risk_aspect}} is the highest-risk aspect with ${{number(dashboardData.summary.highest_risk_negative)}} negative reviews and ${{percent(dashboardData.summary.highest_risk_negative_share)}} negative share.`;
+    document.getElementById("periodExplain").textContent =
+      `The data covers ${{dashboardData.summary.date_start}} to ${{dashboardData.summary.date_end}}. The latest period comparison is used to explain whether negative sentiment is rising or falling.`;
+
+    charts.sentiment = new Chart(document.getElementById("sentimentChart"), {{
       type: "doughnut",
       data: {{
         labels: dashboardData.sentiment.map(d => d.Sentiment),
-        datasets: [{{ data: dashboardData.sentiment.map(d => d.Reviews), backgroundColor: dashboardData.sentiment.map(d => colors[d.Sentiment]) }}]
+        datasets: [{{
+          data: dashboardData.sentiment.map(d => d.Reviews),
+          backgroundColor: dashboardData.sentiment.map(d => colors[d.Sentiment])
+        }}]
       }},
       options: commonOptions
     }});
 
-    new Chart(document.getElementById("priorityChart"), {{
+    charts.priority = new Chart(document.getElementById("priorityChart"), {{
       type: "bar",
       data: {{
-        labels: dashboardData.priority.map(d => d.Aspect),
-        datasets: [{{ label: "Priority score", data: dashboardData.priority.map(d => d["Priority score"]), backgroundColor: "#0F4C5C" }}]
+        labels: dashboardData.priority.slice(0, 8).map(d => d["Aspect label"]),
+        datasets: [{{
+          label: "Priority score",
+          data: dashboardData.priority.slice(0, 8).map(d => d["Priority score"]),
+          backgroundColor: "#2563EB"
+        }}]
       }},
-      options: {{ ...commonOptions, indexAxis: "y" }}
+      options: {{ ...commonOptions, indexAxis: "y", scales: {{ x: {{ beginAtZero: true }} }} }}
     }});
 
-    const periods = [...new Set(dashboardData.trend.map(d => d.Period))];
-    new Chart(document.getElementById("trendChart"), {{
-      type: "line",
+    charts.overallTrend = makeTrendChart("overallTrendChart", dashboardData.timeSeries.monthly);
+
+    charts.aspectStack = new Chart(document.getElementById("aspectStackChart"), {{
+      type: "bar",
       data: {{
-        labels: periods,
-        datasets: ["Negative", "Neutral", "Positive"].map(s => ({{
-          label: s,
-          data: periods.map(p => (dashboardData.trend.find(d => d.Period === p && d.Sentiment === s) || {{ Reviews: 0 }}).Reviews),
-          borderColor: colors[s],
-          backgroundColor: colors[s],
-          tension: 0.25
+        labels: dashboardData.aspectDistribution.map(d => d["Aspect label"]),
+        datasets: ["Negative", "Neutral", "Positive"].map(sentiment => ({{
+          label: sentiment,
+          data: dashboardData.aspectDistribution.map(d => d[sentiment]),
+          backgroundColor: colors[sentiment]
         }}))
+      }},
+      options: {{
+        ...commonOptions,
+        indexAxis: "y",
+        scales: {{ x: {{ stacked: true, beginAtZero: true }}, y: {{ stacked: true }} }}
+      }}
+    }});
+
+    charts.selectedAspect = new Chart(document.getElementById("selectedAspectChart"), {{
+      type: "doughnut",
+      data: {{
+        labels: ["Negative", "Neutral", "Positive"],
+        datasets: [{{ data: [0, 0, 0], backgroundColor: [colors.Negative, colors.Neutral, colors.Positive] }}]
       }},
       options: commonOptions
     }});
+
+    charts.timeTrend = makeTrendChart("timeTrendChart", dashboardData.timeSeries.monthly);
+    charts.aspectTrend = makeTrendChart("aspectTrendChart", dashboardData.aspectTrends.monthly[dashboardData.aspectDistribution[0].Aspect] || []);
+
+    charts.source = new Chart(document.getElementById("sourceChart"), {{
+      type: "bar",
+      data: {{
+        labels: dashboardData.sourceBreakdown.map(d => d.Source),
+        datasets: ["Negative", "Neutral", "Positive"].map(sentiment => ({{
+          label: sentiment,
+          data: dashboardData.sourceBreakdown.map(d => d[sentiment]),
+          backgroundColor: colors[sentiment]
+        }}))
+      }},
+      options: {{ ...commonOptions, scales: {{ x: {{ stacked: true }}, y: {{ stacked: true, beginAtZero: true }} }} }}
+    }});
+
+    charts.line = new Chart(document.getElementById("lineChart"), {{
+      type: "bar",
+      data: {{
+        labels: dashboardData.lineBreakdown.map(d => d["BTS line"]),
+        datasets: ["Negative", "Neutral", "Positive"].map(sentiment => ({{
+          label: sentiment,
+          data: dashboardData.lineBreakdown.map(d => d[sentiment]),
+          backgroundColor: colors[sentiment]
+        }}))
+      }},
+      options: {{ ...commonOptions, indexAxis: "y", scales: {{ x: {{ stacked: true, beginAtZero: true }}, y: {{ stacked: true }} }} }}
+    }});
+
+    updateSelectedAspect();
+    updateTimeViews();
+    renderReviews();
   </script>
 </body>
 </html>
@@ -246,43 +1135,18 @@ def render_html(summary: dict[str, float], payload: dict, complaints) -> str:
 def metric(label: str, value, detail: str) -> str:
     if isinstance(value, (int, float)):
         value = f"{value:,.0f}"
-    return f'<div class="metric"><small>{label}</small><strong>{value}</strong><span>{detail}</span></div>'
-
-
-def complaint_table(complaints) -> str:
-    rows = []
-    for _, row in complaints.iterrows():
-        rows.append(
-            "<tr>"
-            f"<td>{escape(str(row['Source']))}</td>"
-            f"<td>{int(row['Rating'])}</td>"
-            f"<td>{int(row['Agreement count'])}</td>"
-            f"<td>{escape(str(row['Primary aspect']))}</td>"
-            f"<td class=\"snippet\">{escape(str(row['Review snippet']))}</td>"
-            "</tr>"
-        )
     return (
-        "<table><thead><tr><th>Source</th><th>Rating</th><th>Agreement</th>"
-        "<th>Aspect</th><th>Review evidence</th></tr></thead><tbody>"
-        + "".join(rows)
-        + "</tbody></table>"
+        f'<div class="metric"><small>{escape(label)}</small>'
+        f"<strong>{escape(str(value))}</strong><span>{escape(detail)}</span></div>"
     )
 
 
-def _json_records(df):
+def _json_records(df: pd.DataFrame) -> list[dict]:
     out = df.copy()
-    if "Period" in out.columns:
-        out["Period"] = out["Period"].dt.strftime("%Y-%m")
+    for column in out.columns:
+        if pd.api.types.is_datetime64_any_dtype(out[column]):
+            out[column] = out[column].dt.strftime("%Y-%m-%d")
     return out.to_dict("records")
-
-
-def escape(value: str) -> str:
-    return (
-        value.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
 
 
 if __name__ == "__main__":
