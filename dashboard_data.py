@@ -330,6 +330,12 @@ def kpi_summary(df: pd.DataFrame, total_rows: int) -> dict[str, float]:
     return {
         "total_reviews": total_rows,
         "filtered_reviews": review_count,
+        "positive_reviews": positive_count,
+        "neutral_reviews": neutral_count,
+        "negative_reviews": negative_count,
+        "net_sentiment_score": ((positive_count - negative_count) / review_count * 100)
+        if review_count
+        else 0,
         "average_rating": float(df["review_rating_num"].mean()) if review_count else 0,
         "negative_share": negative_count / review_count if review_count else 0,
         "neutral_share": neutral_count / review_count if review_count else 0,
@@ -376,6 +382,53 @@ def sentiment_time_series(df: pd.DataFrame, frequency: str = "M") -> pd.DataFram
     totals = out.groupby("Period")["Reviews"].transform("sum")
     out["Share"] = (out["Reviews"] / totals).fillna(0)
     return out
+
+
+def net_sentiment_time_series(df: pd.DataFrame, frequency: str = "M") -> pd.DataFrame:
+    trend = sentiment_time_series(df, frequency)
+    if trend.empty:
+        return pd.DataFrame(columns=["Period", "Positive", "Neutral", "Negative", "Reviews", "NSS"])
+
+    pivot = (
+        trend.pivot_table(index="Period", columns="Sentiment", values="Reviews", aggfunc="sum")
+        .reindex(columns=SENTIMENT_ORDER, fill_value=0)
+        .sort_index()
+    )
+    pivot["Reviews"] = pivot[SENTIMENT_ORDER].sum(axis=1)
+    pivot["NSS"] = (
+        (pivot["Positive"] - pivot["Negative"]) / pivot["Reviews"].replace(0, pd.NA) * 100
+    ).fillna(0)
+    return pivot.reset_index()
+
+
+def aspect_net_sentiment_time_series(df: pd.DataFrame, frequency: str = "M") -> pd.DataFrame:
+    rows = []
+    for aspect in ASPECT_COLUMNS:
+        trend = aspect_sentiment_time_series(df, aspect, frequency)
+        if trend.empty:
+            continue
+        pivot = (
+            trend.pivot_table(index="Period", columns="Sentiment", values="Reviews", aggfunc="sum")
+            .reindex(columns=SENTIMENT_ORDER, fill_value=0)
+            .sort_index()
+        )
+        pivot["Reviews"] = pivot[SENTIMENT_ORDER].sum(axis=1)
+        pivot["NSS"] = (
+            (pivot["Positive"] - pivot["Negative"]) / pivot["Reviews"].replace(0, pd.NA) * 100
+        ).fillna(0)
+        for period, row in pivot.iterrows():
+            if int(row["Reviews"]) > 0:
+                rows.append(
+                    {
+                        "Period": period,
+                        "Aspect": aspect,
+                        "Reviews": int(row["Reviews"]),
+                        "NSS": float(row["NSS"]),
+                        "Positive": int(row["Positive"]),
+                        "Negative": int(row["Negative"]),
+                    }
+                )
+    return pd.DataFrame(rows)
 
 
 def aspect_sentiment_time_series(

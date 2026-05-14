@@ -4,7 +4,7 @@ Static HTML/JavaScript business dashboard for the final exam topic:
 
 **Enhancing BTS Skytrain Services through Aspect-Based Sentiment Analysis of Passenger Reviews**
 
-The final dashboard is generated from `full_dataset_with_predictions.csv` and does **not** require Streamlit. It shows:
+The final dashboard is generated from `full_dataset_with_predictions.csv` as static HTML/JavaScript. It shows:
 
 - overall sentiment from `Final_Label`,
 - sentiment distribution for every ABSA service aspect,

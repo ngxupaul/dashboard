@@ -663,10 +663,10 @@ def render_html(payload: dict) -> str:
         <p>Generated from <code>full_dataset_with_predictions.csv</code>. Built for analysis, interpretation, and operational decisions.</p>
       </div>
       <nav class="nav" aria-label="Dashboard tabs">
-        <button class="tab-button active" data-tab="overview">Overview & Data Insight</button>
-        <button class="tab-button" data-tab="root">NSS Spike Detection</button>
-        <button class="tab-button" data-tab="time">Time-Based Analysis</button>
-        <button class="tab-button" data-tab="recommendations">Business Suggestion</button>
+        <button class="tab-button active" data-tab="overview">Executive Overview</button>
+        <button class="tab-button" data-tab="time">Time-Based Trend Analysis</button>
+        <button class="tab-button" data-tab="root">Aspect & Root Cause Analysis</button>
+        <button class="tab-button" data-tab="recommendations">Strategic Recommendation Center</button>
       </nav>
       <div class="sidebar-note">
         Global sentiment uses <code>Final_Label</code>. ABSA sentiment uses <code>sentiment_*</code> columns.
@@ -677,18 +677,18 @@ def render_html(payload: dict) -> str:
       <section class="tab-panel active" id="overview">
         <div class="page-head">
           <div>
-            <h2>Overview & Data Insight</h2>
-            <p>Complete overview of passenger sentiment, business health, aspect performance, and review evidence after the default BTS-service relevance filter.</p>
+            <h2>Executive Overview</h2>
+            <p>High-level customer sentiment performance, Net Sentiment Score, sentiment distribution, trend movement, and priority service areas.</p>
           </div>
           <div class="pill">Scope: service-relevant reviews</div>
         </div>
         <section class="metrics">
-          {metric("Raw reviews", payload["summary"]["total_reviews"], "CSV rows")}
-          {metric("Service reviews", payload["summary"]["filtered_reviews"], "Default BTS scope")}
+          {metric("Total reviews", payload["summary"]["filtered_reviews"], "Default BTS scope")}
+          {metric("NSS", f"{payload['summary']['net_sentiment_score']:.1f}", "Net Sentiment Score")}
           {metric("Positive rate", f"{payload['summary']['positive_share']:.1%}", "Final_Label positive")}
           {metric("Negative rate", f"{payload['summary']['negative_share']:.1%}", "Final_Label negative")}
-          {metric("Satisfaction index", f"{payload['summary']['satisfaction_index']:.1f}", "Positive + 0.5 x neutral")}
-          {metric("Model agreement", f"{payload['summary']['model_agreement']:.1%}", "LR vs DistilBERT")}
+          {metric("Positive reviews", payload["summary"]["positive_reviews"], "Positive count")}
+          {metric("Negative reviews", payload["summary"]["negative_reviews"], "Negative count")}
         </section>
         <section class="grid">
           <article class="panel">
@@ -702,7 +702,7 @@ def render_html(payload: dict) -> str:
             <div class="canvas-box"><canvas id="priorityChart"></canvas></div>
           </article>
           <article class="panel wide">
-            <h3>Monthly sentiment movement</h3>
+            <h3>Monthly NSS and sentiment movement</h3>
             <p id="periodExplain"></p>
             <div class="canvas-box"><canvas id="overallTrendChart"></canvas></div>
           </article>
@@ -746,7 +746,7 @@ def render_html(payload: dict) -> str:
       <section class="tab-panel" id="time">
         <div class="page-head">
           <div>
-            <h2>Time-Based Analysis</h2>
+            <h2>Time-Based Trend Analysis</h2>
             <p>Track overall sentiment, review frequency, and selected aspect movement by day, week, month, or quarter.</p>
           </div>
           <div class="pill">Daily / Weekly / Monthly / Quarterly</div>
@@ -781,8 +781,8 @@ def render_html(payload: dict) -> str:
       <section class="tab-panel" id="root">
         <div class="page-head">
           <div>
-            <h2>NSS (Negative Sentiment Spike)</h2>
-            <p>Detect sudden increases in negative sentiment, identify contributing aspects, and classify operational risk.</p>
+            <h2>Aspect & Root Cause Analysis</h2>
+            <p>Detect sudden increases in negative sentiment, identify contributing aspects, classify operational risk, and expose keyword patterns.</p>
           </div>
           <div class="pill">Spike detection and causes</div>
         </div>
@@ -825,7 +825,7 @@ def render_html(payload: dict) -> str:
       <section class="tab-panel" id="recommendations">
         <div class="page-head">
           <div>
-            <h2>Business Suggestion & Resolution Center</h2>
+            <h2>Strategic Recommendation Center</h2>
             <p>Every recommendation is triggered by monthly time-based evidence, then supported with full-period complaint volume, agreement weight, business impact, action, and success metric.</p>
           </div>
           <div class="pill">{len(payload["recommendations"])} priority blocks</div>

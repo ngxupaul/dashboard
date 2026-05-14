@@ -1,6 +1,6 @@
 # BTS Skytrain ABSA Business Dashboard
 
-This project now uses a static HTML/JavaScript dashboard generated from `full_dataset_with_predictions.csv`. The final dashboard does not need Streamlit.
+This project now uses a static HTML/JavaScript dashboard generated from `full_dataset_with_predictions.csv`.
 
 It includes:
 
