@@ -12,6 +12,7 @@ from dashboard_data import (
     ASPECT_COLUMNS,
     DATA_PATH,
     aspect_evidence_reviews,
+    aspect_nss_summary,
     aspect_priority,
     aspect_recent_changes,
     aspect_sentiment_time_series,
@@ -19,6 +20,7 @@ from dashboard_data import (
     filter_dataset,
     high_agreement_low_rating,
     keyword_frequency,
+    lda_topic_keywords,
     kpi_summary,
     load_dataset,
     model_agreement,
@@ -28,6 +30,7 @@ from dashboard_data import (
     root_cause_matrix,
     sentiment_distribution,
     sentiment_time_series,
+    time_coverage_summary,
 )
 
 
@@ -77,6 +80,8 @@ def main() -> None:
         "periodComparison": recent_period_comparison(service_df, "M"),
         "negativeSpikes": _json_records(negative_spikes(service_df, "M", limit=6)),
         "aspectChanges": add_aspect_labels(aspect_recent_changes(service_df, "M")).to_dict("records"),
+        "nssByAspect": add_aspect_labels(aspect_nss_summary(service_df)).to_dict("records"),
+        "timeCoverage": time_coverage_summary(service_df),
         "aspectDistribution": aspect_distribution_records(priority),
         "priority": priority_table_records(priority),
         "rootCauses": root_causes.to_dict("records"),
@@ -94,6 +99,8 @@ def main() -> None:
         ).to_dict("records"),
         "negativeKeywords": keyword_frequency(service_df, sentiment="Negative", limit=16).to_dict("records"),
         "positiveKeywords": keyword_frequency(service_df, sentiment="Positive", limit=16).to_dict("records"),
+        "negativeTopics": lda_topic_keywords(service_df, sentiment="Negative").to_dict("records"),
+        "positiveTopics": lda_topic_keywords(service_df, sentiment="Positive").to_dict("records"),
         "recommendations": business_recommendations(service_df, priority),
         "modelPairs": model_pairs.head(10).to_dict("records"),
         "reviews": _json_records(
@@ -685,8 +692,8 @@ def render_html(payload: dict) -> str:
         <section class="metrics">
           {metric("Total reviews", payload["summary"]["filtered_reviews"], "Default BTS scope")}
           {metric("NSS", f"{payload['summary']['net_sentiment_score']:.1f}", "Net Sentiment Score")}
-          {metric("Positive rate", f"{payload['summary']['positive_share']:.1%}", "Final_Label positive")}
-          {metric("Negative rate", f"{payload['summary']['negative_share']:.1%}", "Final_Label negative")}
+          {metric("Positive rate", f"{payload['summary']['positive_share']:.1%}", "Predicted positive")}
+          {metric("Negative rate", f"{payload['summary']['negative_share']:.1%}", "Predicted negative")}
           {metric("Positive reviews", payload["summary"]["positive_reviews"], "Positive count")}
           {metric("Negative reviews", payload["summary"]["negative_reviews"], "Negative count")}
         </section>
@@ -702,9 +709,14 @@ def render_html(payload: dict) -> str:
             <div class="canvas-box"><canvas id="priorityChart"></canvas></div>
           </article>
           <article class="panel wide">
-            <h3>Monthly NSS and sentiment movement</h3>
+            <h3>Monthly sentiment movement</h3>
             <p id="periodExplain"></p>
             <div class="canvas-box"><canvas id="overallTrendChart"></canvas></div>
+          </article>
+          <article class="panel wide">
+            <h3>Net Sentiment Score by aspect</h3>
+            <p>Notebook business-insight view: aspect NSS ranks which operating areas are creating satisfaction or dissatisfaction.</p>
+            <div class="canvas-box tall"><canvas id="nssAspectChart"></canvas></div>
           </article>
           <article class="panel wide">
             <h3>Aspect distribution and sentiment heatmap</h3>
@@ -766,6 +778,10 @@ def render_html(payload: dict) -> str:
             <p id="timeExplain"></p>
             <div class="canvas-box tall"><canvas id="timeTrendChart"></canvas></div>
           </article>
+          <article class="panel wide">
+            <h3>Time coverage note</h3>
+            <p id="timeCoverageExplain"></p>
+          </article>
           <article class="panel">
             <h3>Selected aspect trend</h3>
             <div class="control-row">
@@ -819,6 +835,16 @@ def render_html(payload: dict) -> str:
             <h3>Positive keywords</h3>
             <div id="positiveKeywordTable"></div>
           </article>
+          <article class="panel">
+            <h3>LDA topics - negative reviews</h3>
+            <p>Notebook business-insight view: topic keywords summarize recurring complaint themes.</p>
+            <div id="negativeTopicTable"></div>
+          </article>
+          <article class="panel">
+            <h3>LDA topics - positive reviews</h3>
+            <p>Notebook business-insight view: topic keywords summarize repeated praise themes.</p>
+            <div id="positiveTopicTable"></div>
+          </article>
         </section>
       </section>
 
@@ -854,7 +880,7 @@ def render_html(payload: dict) -> str:
         </section>
       </section>
 
-      <p class="footer">Generated by <code>build_static_site.py</code> from <code>full_dataset_with_predictions.csv</code>.</p>
+      <p class="footer">Generated by <code>build_static_site.py</code> from <code>reference/all_reviews_predicted.csv</code>.</p>
     </main>
   </div>
   <script>
@@ -1137,6 +1163,16 @@ def render_html(payload: dict) -> str:
         "Keyword": value => html(value),
         "Count": value => number(value)
       }});
+      renderSimpleTable("negativeTopicTable", ["Topic", "Keywords", "Weight"], dashboardData.negativeTopics, {{
+        "Topic": value => html(value),
+        "Keywords": value => `<span class="snippet">${{html(value)}}</span>`,
+        "Weight": value => number(value)
+      }});
+      renderSimpleTable("positiveTopicTable", ["Topic", "Keywords", "Weight"], dashboardData.positiveTopics, {{
+        "Topic": value => html(value),
+        "Keywords": value => `<span class="snippet">${{html(value)}}</span>`,
+        "Weight": value => number(value)
+      }});
     }}
 
     setupTabs();
@@ -1152,6 +1188,7 @@ def render_html(payload: dict) -> str:
       `${{dashboardData.summary.highest_risk_aspect}} is the highest-risk aspect with ${{number(dashboardData.summary.highest_risk_negative)}} negative reviews and ${{percent(dashboardData.summary.highest_risk_negative_share)}} negative share.`;
     document.getElementById("periodExplain").textContent =
       `The data covers ${{dashboardData.summary.date_start}} to ${{dashboardData.summary.date_end}}. The latest period comparison is used to explain whether negative sentiment is rising or falling.`;
+    document.getElementById("timeCoverageExplain").textContent = dashboardData.timeCoverage.message;
 
     charts.sentiment = new Chart(document.getElementById("sentimentChart"), {{
       type: "doughnut",
@@ -1176,6 +1213,23 @@ def render_html(payload: dict) -> str:
         }}]
       }},
       options: {{ ...commonOptions, indexAxis: "y", scales: {{ x: {{ beginAtZero: true }} }} }}
+    }});
+
+    charts.nssAspect = new Chart(document.getElementById("nssAspectChart"), {{
+      type: "bar",
+      data: {{
+        labels: dashboardData.nssByAspect.map(d => d["Aspect label"]),
+        datasets: [{{
+          label: "NSS (%)",
+          data: dashboardData.nssByAspect.map(d => d.NSS),
+          backgroundColor: dashboardData.nssByAspect.map(d => Number(d.NSS) < 0 ? "#C24132" : Number(d.NSS) < 30 ? "#B7791F" : "#138A63")
+        }}]
+      }},
+      options: {{
+        ...commonOptions,
+        indexAxis: "y",
+        scales: {{ x: {{ min: -100, max: 100 }} }}
+      }}
     }});
 
     charts.overallTrend = makeTrendChart("overallTrendChart", dashboardData.timeSeries.monthly);

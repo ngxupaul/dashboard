@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 
-DATA_PATH = Path(__file__).with_name("full_dataset_with_predictions.csv")
+DATA_PATH = Path(__file__).parent / "reference" / "all_reviews_predicted.csv"
 
 SENTIMENT_ORDER = ["Negative", "Neutral", "Positive"]
 
@@ -77,6 +77,13 @@ ASPECT_COLUMNS = {
     "Signage & Navigation": "sentiment_signage",
     "Infrastructure & Facilities": "sentiment_infrastructure",
     "Overall Experience": "sentiment_overall",
+}
+
+RAW_ASPECT_MAP = {
+    "Staff & Service Quality": "Staff & Customer Service",
+    "Facilities & Accessibility": "Infrastructure & Facilities",
+    "Information & Navigation": "Signage & Navigation",
+    "Overall Experience & Convenience": "Overall Experience",
 }
 
 ACTION_ASPECTS = [
@@ -189,21 +196,13 @@ BTS_SIGNAL_PATTERN = re.compile(
 )
 
 REQUIRED_COLUMNS = [
-    "review_title",
     "review_text",
     "review_rating",
-    "review_rating_num",
-    "published_date",
-    "review_date",
-    "like_count",
     "source",
+    "created_at_date",
     "bts_line",
-    "relevant",
-    "primary_aspect",
-    "Final_Label",
-    "LogisticRegression_Label",
-    "DistilBERT_Label",
-    *ASPECT_COLUMNS.values(),
+    "aspect_pred",
+    "sentiment_pred",
 ]
 
 
@@ -213,7 +212,43 @@ def load_dataset(csv_path: Path | str = DATA_PATH) -> pd.DataFrame:
     missing = [column for column in REQUIRED_COLUMNS if column not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns: {', '.join(missing)}")
-    return prepare_dataset(df)
+    return prepare_dataset(normalize_prediction_dataset(df))
+
+
+def normalize_prediction_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    """Map the final prediction CSV into the dashboard's analysis contract."""
+    df = df.copy()
+    predicted_aspect = df["aspect_pred"].where(df["aspect_pred"].notna(), df.get("aspect", ""))
+    predicted_sentiment = df["sentiment_pred"].where(
+        df["sentiment_pred"].notna(),
+        df.get("sentiment", ""),
+    )
+
+    df["primary_aspect"] = (
+        predicted_aspect.fillna("")
+        .astype(str)
+        .str.strip()
+        .replace(RAW_ASPECT_MAP)
+    )
+    df["Final_Label"] = predicted_sentiment.fillna("").astype(str).str.strip()
+    df.loc[~df["Final_Label"].isin(SENTIMENT_ORDER), "Final_Label"] = "Neutral"
+
+    df["review_title"] = ""
+    df["review_rating_num"] = pd.to_numeric(df["review_rating"], errors="coerce").fillna(3)
+    df["published_date"] = df["created_at_date"]
+    df["review_date"] = df["created_at_date"]
+    df["like_count"] = 0
+    df["relevant"] = True
+    df["review_link"] = ""
+    df["LogisticRegression_Label"] = df.get("sentiment", df["Final_Label"])
+    df["DistilBERT_Label"] = df["Final_Label"]
+
+    for aspect, column in ASPECT_COLUMNS.items():
+        df[column] = "Neutral"
+        mask = df["primary_aspect"].eq(aspect)
+        df.loc[mask, column] = df.loc[mask, "Final_Label"]
+
+    return df
 
 
 def prepare_dataset(df: pd.DataFrame) -> pd.DataFrame:
@@ -265,7 +300,7 @@ def prepare_dataset(df: pd.DataFrame) -> pd.DataFrame:
     base_relevant = df["relevant"].astype(str).str.lower().eq("true")
     trusted_source = df["source_norm"].isin(TRUSTED_REVIEW_SOURCES)
     direct_bts_signal = relevance_text.str.contains(BTS_SIGNAL_PATTERN, regex=True, na=False)
-    df["service_relevant"] = base_relevant & (trusted_source | direct_bts_signal)
+    df["service_relevant"] = base_relevant | trusted_source | direct_bts_signal
 
     df["is_negative"] = df["Final_Label"].eq("Negative")
     df["negative_agreement_weight"] = df["agreement_count"].where(df["is_negative"], 0)
@@ -429,6 +464,63 @@ def aspect_net_sentiment_time_series(df: pd.DataFrame, frequency: str = "M") -> 
                     }
                 )
     return pd.DataFrame(rows)
+
+
+def aspect_nss_summary(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for aspect, column in ASPECT_COLUMNS.items():
+        mask = df["primary_aspect"].eq(aspect) | df[column].isin(["Positive", "Negative"])
+        subset = df.loc[mask]
+        if subset.empty:
+            rows.append(
+                {
+                    "Aspect": aspect,
+                    "Reviews": 0,
+                    "Positive": 0,
+                    "Negative": 0,
+                    "NSS": 0.0,
+                }
+            )
+            continue
+        counts = subset[column].value_counts().reindex(SENTIMENT_ORDER, fill_value=0)
+        reviews = int(counts.sum())
+        nss = (counts["Positive"] - counts["Negative"]) / reviews * 100 if reviews else 0
+        rows.append(
+            {
+                "Aspect": aspect,
+                "Reviews": reviews,
+                "Positive": int(counts["Positive"]),
+                "Negative": int(counts["Negative"]),
+                "NSS": float(nss),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("NSS")
+
+
+def time_coverage_summary(df: pd.DataFrame) -> dict[str, object]:
+    dated = df["review_date_ui"].dropna()
+    if dated.empty:
+        return {
+            "date_count": 0,
+            "start": "",
+            "end": "",
+            "message": "No usable date field is available, so time-based analysis is disabled.",
+        }
+    distinct_days = int(dated.dt.date.nunique())
+    start = dated.min().strftime("%Y-%m-%d %H:%M")
+    end = dated.max().strftime("%Y-%m-%d %H:%M")
+    if distinct_days <= 1:
+        message = (
+            "The prediction file contains a single review date snapshot. Daily, weekly, "
+            "monthly, and quarterly controls are available, but trend claims should be "
+            "treated as snapshot monitoring rather than long-term seasonality."
+        )
+    else:
+        message = (
+            f"The data spans {distinct_days:,} distinct review dates, allowing period-over-period "
+            "sentiment movement and recovery analysis."
+        )
+    return {"date_count": distinct_days, "start": start, "end": end, "message": message}
 
 
 def aspect_sentiment_time_series(
@@ -668,7 +760,17 @@ def aspect_recent_changes(df: pd.DataFrame, frequency: str = "M") -> pd.DataFram
                 "Current mentions": int(current_total),
             }
         )
-    return pd.DataFrame(rows).sort_values("Negative share change", ascending=False)
+    columns = [
+        "Aspect",
+        "Previous negative share",
+        "Current negative share",
+        "Negative share change",
+        "Negative count change",
+        "Current mentions",
+    ]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows, columns=columns).sort_values("Negative share change", ascending=False)
 
 
 def keyword_frequency(
@@ -688,6 +790,72 @@ def keyword_frequency(
     return pd.DataFrame(
         [{"Keyword": word, "Count": count} for word, count in words.most_common(limit)]
     )
+
+
+def lda_topic_keywords(
+    df: pd.DataFrame,
+    *,
+    sentiment: str,
+    n_topics: int = 6,
+    n_top_words: int = 8,
+) -> pd.DataFrame:
+    texts = (
+        df.loc[df["Final_Label"].eq(sentiment), "full_review_text"]
+        .fillna("")
+        .astype(str)
+        .tolist()
+    )
+    texts = [text for text in texts if len(text.split()) >= 5]
+    if len(texts) < n_topics * 2:
+        return pd.DataFrame(columns=["Topic", "Keywords", "Weight"])
+
+    try:
+        from sklearn.decomposition import LatentDirichletAllocation
+        from sklearn.feature_extraction.text import CountVectorizer
+    except ImportError:
+        keywords = keyword_frequency(df, sentiment=sentiment, limit=n_topics * n_top_words)
+        rows = []
+        for topic_idx in range(n_topics):
+            chunk = keywords.iloc[topic_idx * n_top_words : (topic_idx + 1) * n_top_words]
+            if chunk.empty:
+                continue
+            rows.append(
+                {
+                    "Topic": f"Topic {topic_idx + 1}",
+                    "Keywords": ", ".join(chunk["Keyword"].tolist()),
+                    "Weight": int(chunk["Count"].sum()),
+                }
+            )
+        return pd.DataFrame(rows)
+
+    vectorizer = CountVectorizer(
+        max_features=4000,
+        stop_words=list(STOPWORDS),
+        token_pattern=r"\b[a-z]{3,}\b",
+        min_df=5,
+    )
+    matrix = vectorizer.fit_transform(texts)
+    if matrix.shape[1] == 0:
+        return pd.DataFrame(columns=["Topic", "Keywords", "Weight"])
+
+    lda = LatentDirichletAllocation(
+        n_components=n_topics,
+        random_state=42,
+        max_iter=12,
+        learning_method="batch",
+    ).fit(matrix)
+    feature_names = vectorizer.get_feature_names_out()
+    rows = []
+    for idx, component in enumerate(lda.components_):
+        top_idx = component.argsort()[: -n_top_words - 1 : -1]
+        rows.append(
+            {
+                "Topic": f"Topic {idx + 1}",
+                "Keywords": ", ".join(feature_names[i] for i in top_idx),
+                "Weight": float(component[top_idx].sum()),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def aspect_sentiment_matrix(df: pd.DataFrame) -> pd.DataFrame:

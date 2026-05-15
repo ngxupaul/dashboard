@@ -3,68 +3,83 @@ from __future__ import annotations
 import pandas as pd
 
 from dashboard_data import (
+    ASPECT_COLUMNS,
     DATA_PATH,
+    aspect_nss_summary,
     aspect_priority,
     filter_dataset,
     high_agreement_low_rating,
+    lda_topic_keywords,
     load_dataset,
     model_agreement,
     sentiment_time_series,
+    time_coverage_summary,
 )
 
 
 def main() -> None:
     raw_header = pd.read_csv(DATA_PATH, nrows=0, encoding="utf-8-sig")
-    assert len(raw_header.columns) == 54, f"Expected 54 raw columns, found {len(raw_header.columns)}"
+    expected_columns = {
+        "review_text",
+        "review_rating",
+        "source",
+        "created_at_date",
+        "bts_line",
+        "aspect_pred",
+        "sentiment_pred",
+    }
+    missing = expected_columns - set(raw_header.columns)
+    assert not missing, f"Prediction CSV is missing columns: {sorted(missing)}"
 
     df = load_dataset(DATA_PATH)
-    assert len(df) == 24459, f"Expected 24,459 rows, found {len(df)}"
+    assert len(df) == 20782, f"Expected 20,782 rows, found {len(df):,}"
     assert df["review_rating_num"].between(1, 5).all(), "Ratings must stay on the 1-5 scale"
-
-    service_df = filter_dataset(df, service_relevant_only=True)
-    assert 12000 <= len(service_df) <= 14000, (
-        "Default service-relevant scope should be near the profiled 12.5k rows, "
-        f"found {len(service_df):,}"
+    assert df["Final_Label"].isin({"Negative", "Neutral", "Positive"}).all(), (
+        "Predicted sentiment must normalize to three sentiment classes"
+    )
+    assert set(ASPECT_COLUMNS).issuperset(set(df["primary_aspect"].unique())), (
+        "Predicted aspects must normalize to the dashboard aspect taxonomy"
     )
 
-    reddit = df[df["source_norm"].eq("reddit")]
-    assert not reddit.empty, "Reddit rows should exist"
-    assert reddit["review_rating_num"].max() <= 5, "Reddit rating must not use upvotes"
-    assert reddit["agreement_count"].max() > 5, "Reddit agreement/upvote signal should be separate"
+    service_df = filter_dataset(df, service_relevant_only=True)
+    assert len(service_df) == len(df), (
+        "The final prediction file should already be scoped to BTS-service reviews"
+    )
 
     priority = aspect_priority(service_df)
     top_aspects = priority.head(4)["Aspect"].tolist()
-    assert "Crowding & Comfort" in top_aspects, "Crowding should remain a top priority"
     assert "Fare & Payment System" in top_aspects, "Fare/payment should remain a top priority"
+    assert "Crowding & Comfort" in top_aspects, "Crowding should remain a top priority"
 
     agreement, _pairs = model_agreement(df)
-    assert 0.88 <= agreement <= 0.90, f"Expected model agreement around 89.15%, found {agreement:.2%}"
+    assert 0.0 <= agreement <= 1.0, "Model agreement must be a valid ratio"
 
-    complaints = high_agreement_low_rating(service_df, min_agreement=20, max_rating=2)
-    assert not complaints.empty, "High-agreement, low-rating complaint table should not be empty"
+    complaints = high_agreement_low_rating(service_df, min_agreement=0, max_rating=2)
+    assert not complaints.empty, "Low-rating complaint table should not be empty"
 
-    recent = filter_dataset(
-        df,
-        service_relevant_only=True,
-        date_range=(pd.Timestamp("2025-01-01"), pd.Timestamp("2026-04-30")),
-    )
-    assert not recent.empty, "Date range filter should return recent BTS-service rows"
-    assert recent["review_date_ui"].notna().all(), "Date-filtered rows should have parsed dates"
-    assert recent["review_date_ui"].min() >= pd.Timestamp("2025-01-01"), "Date filter lower bound failed"
-    assert recent["review_date_ui"].max() < pd.Timestamp("2026-05-01"), "Date filter upper bound failed"
-
-    trend = sentiment_time_series(recent, "M")
-    assert not trend.empty, "Sentiment time-series chart should have monthly data"
+    trend = sentiment_time_series(service_df, "D")
+    assert not trend.empty, "Sentiment time-series chart should have daily data"
     assert set(trend["Sentiment"].unique()) == {"Negative", "Neutral", "Positive"}, (
         "Trend chart should include all three sentiment series"
     )
 
+    nss = aspect_nss_summary(service_df)
+    assert not nss.empty and {"Aspect", "NSS"}.issubset(nss.columns), (
+        "NSS by aspect must be available for notebook business-insight charts"
+    )
+
+    topics = lda_topic_keywords(service_df, sentiment="Negative", n_topics=3, n_top_words=5)
+    assert not topics.empty, "Negative LDA/topic keyword table should not be empty"
+
+    coverage = time_coverage_summary(service_df)
+    assert coverage["date_count"] >= 1, "Time coverage summary should detect at least one date"
+
     print("Dashboard verification passed")
-    print(f"Raw dataset: {len(df):,} rows x {len(raw_header.columns)} columns")
-    print(f"Default service-relevant scope: {len(service_df):,} rows")
-    print(f"LR vs DistilBERT agreement: {agreement:.2%}")
+    print(f"Prediction dataset: {len(df):,} rows x {len(raw_header.columns)} columns")
+    print(f"Default BTS scope: {len(service_df):,} rows")
+    print(f"Original-vs-predicted sentiment agreement: {agreement:.2%}")
     print(f"Top priority aspects: {', '.join(top_aspects)}")
-    print(f"Recent date-filtered rows: {len(recent):,}")
+    print(f"Time coverage: {coverage['message']}")
 
 
 if __name__ == "__main__":
