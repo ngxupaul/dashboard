@@ -273,7 +273,7 @@
     <aside>
       <div class="brand">
         <h1>BTS Skytrain ABSA Business Dashboard</h1>
-        <p>Generated from <code>full_dataset_with_predictions.csv</code>. Built for analysis, interpretation, and operational decisions.</p>
+        <p>Generated from <code>reference/all_reviews_predicted.csv</code>. Built for time-based analysis, interpretation, and operational decisions.</p>
       </div>
       <nav class="nav" aria-label="Dashboard tabs">
         <button class="tab-button active" data-tab="overview">Executive Overview</button>
@@ -282,8 +282,8 @@
         <button class="tab-button" data-tab="recommendations">Strategic Recommendation Center</button>
       </nav>
       <div class="sidebar-note">
-        Global sentiment uses <code>Final_Label</code>. ABSA sentiment uses <code>sentiment_*</code> columns.
-        <code>like_count</code> is agreement evidence, not rating.
+        Sentiment uses <code>sentiment_pred</code> and aspects use <code>aspect_pred</code>.
+        The dashboard includes NSS, aspect risk, keyword evidence, and LDA topic insights.
       </div>
     </aside>
     <main>
