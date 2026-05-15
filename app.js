@@ -1,4 +1,7 @@
-const CSV_URL = "DATA_QUALITY_CHECKLIST_filled.csv";
+const CSV_URLS = [
+  "DATA_QUALITY_CHECKLIST_filled.csv",
+  "https://raw.githubusercontent.com/ngxupaul/dashboard/main/DATA_QUALITY_CHECKLIST_filled.csv",
+];
 const COLORS = {
   Positive: "#168a4a",
   Neutral: "#7a8288",
@@ -888,9 +891,7 @@ function attachTips(root) {
 
 async function loadCsv() {
   try {
-    const res = await fetch(CSV_URL);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
+    const text = await fetchCsvText();
     state.rows = cleanRows(parseCsv(text));
     setStatus("ready", `${fmt.format(state.rows.length)} reviews loaded`);
     setupFilters();
@@ -908,6 +909,20 @@ async function loadCsv() {
       applyFilters();
     }, { once: true });
   }
+}
+
+async function fetchCsvText() {
+  let lastError = null;
+  for (const url of CSV_URLS) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.text();
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("CSV unavailable");
 }
 
 loadCsv();
