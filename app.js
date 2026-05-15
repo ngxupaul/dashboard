@@ -1,4 +1,4 @@
-const CSV_URL = "all_reviews_predicted.csv";
+const CSV_URL = "DATA_QUALITY_CHECKLIST_filled.csv";
 const COLORS = {
   Positive: "#168a4a",
   Neutral: "#7a8288",
@@ -13,7 +13,6 @@ const COLORS = {
 const state = {
   rows: [],
   filtered: [],
-  quality: null,
   sortKey: "date",
   sortDir: -1,
   activeTab: "overview",
@@ -91,6 +90,13 @@ function isTopicRelevant(text) {
   return /\b(bts|skytrain|sukhumvit|silom|station|stations|train|trains|platform|platforms|fare|ticket|tickets|rabbit card|interchange|escalator|elevator|lift|airport rail link|arl|mrt|transit|transport|commute|siam|asok|on nut|mo chit|chon nonsi|sala daeng|bearing|national stadium|bang wa|saphan taksin|ari|phrom phong|udom suk|phaya thai|ekkamai|thong lor|ha yaek lat phrao|saphan khwai|krung thon buri)\b/i.test(text || "");
 }
 
+function isLikelyOffTopic(text) {
+  const value = String(text || "");
+  const nonServiceMarkers = /\b(restaurant|restaurants|coffee shop|cinema|movie|hotel|condo|apartment|housing|gym|fried chicken|vegetarian|halaal|nightlife|club|bar|beer|food|teacher|dungeons|dragons|clinic|dentist|visa|fruit|boxes|laundry|meal|buffet|neighborhood|neighbourhood|where to stay|accommodation|accommodations)\b/i;
+  const serviceMarkers = /\b(crowded|crowding|packed|fare|ticket|rabbit|delay|late|waiting|frequency|broken|dirty|clean|unsafe|security|staff helped|platform|signage|wayfinding|payment machine|escalator|elevator|lift)\b/i;
+  return nonServiceMarkers.test(value) && !serviceMarkers.test(value);
+}
+
 function cleanRows(rows) {
   return rows.map((r, i) => {
     const dateText = String(r.created_at_date || "").slice(0, 10);
@@ -98,9 +104,11 @@ function cleanRows(rows) {
     const confidence = Math.max(0, Math.min(1, Number(r.sentiment_confidence) || 0));
     const rating = Number(r.review_rating) || null;
     const sentiment = r.sentiment_pred || r.sentiment || "Unknown";
+    const text = r.review_text || "";
+    const likelyOffTopic = isLikelyOffTopic(text);
     return {
       id: i,
-      text: r.review_text || "",
+      text,
       rating,
       source: r.source || "Unknown",
       dateText,
@@ -111,7 +119,8 @@ function cleanRows(rows) {
       aspect: r.aspect_pred || r.aspect || "Unknown",
       sentiment,
       confidence,
-      topicRelevant: isTopicRelevant(r.review_text || ""),
+      topicRelevant: isTopicRelevant(text),
+      likelyOffTopic,
       ratingConflict: Boolean(rating && confidence >= 0.8 && ((rating <= 2 && sentiment === "Positive") || (rating >= 4 && sentiment === "Negative"))),
     };
   });
@@ -180,8 +189,12 @@ function setupFilters() {
   fillSelect("aspectFilter", [...new Set(state.rows.map((r) => r.aspect))].sort(), "All aspects");
   fillSelect("sentimentFilter", ["Positive", "Neutral", "Negative"], "All sentiment");
   fillSelect("sourceFilter", [...new Set(state.rows.map((r) => r.source))].sort(), "All sources");
+  $("dataScopeFilter").innerHTML = ["Likely BTS service reviews", "Needs manual review", "All rows from CSV"]
+    .map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`)
+    .join("");
+  $("dataScopeFilter").value = "Likely BTS service reviews";
 
-  ["dateFrom", "dateTo", "lineFilter", "aspectFilter", "sentimentFilter", "sourceFilter", "grainFilter"].forEach((id) => {
+  ["dateFrom", "dateTo", "lineFilter", "aspectFilter", "sentimentFilter", "sourceFilter", "dataScopeFilter", "grainFilter"].forEach((id) => {
     $(id).addEventListener("change", applyFilters);
   });
   $("confidenceFilter").addEventListener("input", scheduleApplyFilters);
@@ -193,6 +206,7 @@ function setupFilters() {
     $("aspectFilter").value = "";
     $("sentimentFilter").value = "";
     $("sourceFilter").value = "";
+    $("dataScopeFilter").value = "Likely BTS service reviews";
     $("confidenceFilter").value = "0";
     $("grainFilter").value = "month";
     $("searchInput").value = "";
@@ -228,6 +242,7 @@ function applyFilters() {
   const aspect = $("aspectFilter").value;
   const sentiment = $("sentimentFilter").value;
   const source = $("sourceFilter").value;
+  const dataScope = $("dataScopeFilter").value;
   const minConfidence = Number($("confidenceFilter").value) || 0;
   const search = $("searchInput").value.trim().toLowerCase();
   $("confidenceValue").textContent = `${Math.round(minConfidence * 100)}%`;
@@ -239,6 +254,8 @@ function applyFilters() {
     if (aspect && r.aspect !== aspect) return false;
     if (sentiment && r.sentiment !== sentiment) return false;
     if (source && r.source !== source) return false;
+    if (dataScope === "Likely BTS service reviews" && r.likelyOffTopic) return false;
+    if (dataScope === "Needs manual review" && !(r.likelyOffTopic || r.confidence < 0.6 || r.ratingConflict || !r.topicRelevant)) return false;
     if (r.confidence < minConfidence) return false;
     if (search && !r.text.toLowerCase().includes(search)) return false;
     return true;
@@ -264,7 +281,6 @@ function setStatus(type, text) {
 }
 
 function render() {
-  renderDataQuality();
   if (state.activeTab === "overview") {
     renderKpis();
     renderOverview();
@@ -339,50 +355,6 @@ function signalCard(title, item, tone) {
     <strong>${escapeHtml(item.aspect)}</strong>
     <div class="meta-row"><span>${fmt.format(item.total)} reviews</span><span>NSS ${pct(item.nss)}</span></div>
   </div>`;
-}
-
-function qualitySummary(rows) {
-  const total = rows.length;
-  const missingDate = rows.filter((r) => !r.date).length;
-  const missingLine = rows.filter((r) => !r.rawLine).length;
-  const unknownLine = rows.filter((r) => r.line === "Unknown").length;
-  const offTopic = rows.filter((r) => !r.topicRelevant).length;
-  const offTopicHighConfidence = rows.filter((r) => !r.topicRelevant && r.confidence >= 0.8).length;
-  const ratingConflicts = rows.filter((r) => r.ratingConflict).length;
-  return { total, missingDate, missingLine, unknownLine, offTopic, offTopicHighConfidence, ratingConflicts };
-}
-
-function renderDataQuality() {
-  if (!state.rows.length) return;
-  const all = state.quality || qualitySummary(state.rows);
-  const current = qualitySummary(state.filtered);
-  const lineCounts = [...groupBy(state.rows, (r) => r.line)]
-    .map(([line, list]) => ({ line, total: list.length }))
-    .sort((a, b) => b.total - a.total);
-  const silom = lineCounts.find((x) => x.line === "Silom")?.total || 0;
-  const issues = [
-    [`${fmt.format(all.missingDate)} missing dates`, all.missingDate > 0 ? "medium" : "low"],
-    [`${fmt.format(all.missingLine)} missing line labels`, all.missingLine > 0 ? "high" : "low"],
-    [`${fmt.format(all.offTopicHighConfidence)} high-confidence off-topic candidates`, all.offTopicHighConfidence > 0 ? "high" : "low"],
-    [`${fmt.format(all.ratingConflicts)} rating/sentiment conflicts`, all.ratingConflicts > 0 ? "medium" : "low"],
-  ];
-  $("dataQualityPanel").innerHTML = `
-    <div class="quality-head">
-      <div>
-        <span class="eyebrow">Data Readiness</span>
-        <h2>Use line comparisons with caution</h2>
-        <p>The dashboard is scoped to BTS Skytrain passenger sentiment, but the CSV contains missing line labels, missing dates, and likely off-topic reviews. Default date filters exclude rows without dates.</p>
-      </div>
-      <div class="quality-current">
-        <strong>${fmt.format(current.total)}</strong>
-        <span>reviews in current slice</span>
-      </div>
-    </div>
-    <div class="quality-grid">
-      ${issues.map(([label, tone]) => `<div class="quality-item ${tone}"><strong>${escapeHtml(label)}</strong><span>Full dataset</span></div>`).join("")}
-      <div class="quality-item ${silom < 100 ? "high" : "medium"}"><strong>${fmt.format(silom)} Silom reviews</strong><span>Small sample for line comparison</span></div>
-    </div>
-  `;
 }
 
 function renderLineCoverage(rows) {
@@ -920,7 +892,6 @@ async function loadCsv() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const text = await res.text();
     state.rows = cleanRows(parseCsv(text));
-    state.quality = qualitySummary(state.rows);
     setStatus("ready", `${fmt.format(state.rows.length)} reviews loaded`);
     setupFilters();
     applyFilters();
@@ -931,7 +902,6 @@ async function loadCsv() {
       const file = event.target.files[0];
       if (!file) return;
       state.rows = cleanRows(parseCsv(await file.text()));
-      state.quality = qualitySummary(state.rows);
       setStatus("ready", `${fmt.format(state.rows.length)} reviews loaded`);
       $("fallbackLoader").classList.add("hidden");
       setupFilters();

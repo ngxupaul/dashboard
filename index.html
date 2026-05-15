@@ -46,6 +46,10 @@
           <select id="sourceFilter"></select>
         </label>
         <label>
+          <span>Data scope</span>
+          <select id="dataScopeFilter"></select>
+        </label>
+        <label>
           <span>Min confidence</span>
           <input id="confidenceFilter" type="range" min="0" max="1" value="0" step="0.05" />
           <b id="confidenceValue">0%</b>
@@ -71,8 +75,6 @@
         Run a local server from this folder, or choose the file manually:
         <input id="manualCsv" type="file" accept=".csv" />
       </div>
-
-      <section id="dataQualityPanel" class="quality-panel" aria-label="Data readiness"></section>
 
       <nav class="tabs" aria-label="Analysis sections">
         <button class="tab active" data-tab="overview" type="button">Executive Overview</button>
