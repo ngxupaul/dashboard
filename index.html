@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BTS Skytrain Passenger Sentiment Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">BTS Skytrain Service Intelligence</p>
+          <h1>Aspect-Based Sentiment Analysis of Passenger Reviews</h1>
+          <p class="subtitle">Sukhumvit and Silom line monitoring from passenger reviews, sentiment labels, and aspect predictions.</p>
+        </div>
+        <div class="status-panel">
+          <span class="status-dot"></span>
+          <span id="dataStatus">Loading CSV</span>
+        </div>
+      </header>
+
+      <section class="filter-bar" aria-label="Dashboard filters">
+        <label>
+          <span>Date from</span>
+          <input id="dateFrom" type="date" />
+        </label>
+        <label>
+          <span>Date to</span>
+          <input id="dateTo" type="date" />
+        </label>
+        <label>
+          <span>BTS line</span>
+          <select id="lineFilter"></select>
+        </label>
+        <label>
+          <span>Aspect</span>
+          <select id="aspectFilter"></select>
+        </label>
+        <label>
+          <span>Sentiment</span>
+          <select id="sentimentFilter"></select>
+        </label>
+        <label>
+          <span>Source</span>
+          <select id="sourceFilter"></select>
+        </label>
+        <label>
+          <span>Data scope</span>
+          <select id="dataScopeFilter"></select>
+        </label>
+        <label>
+          <span>Min confidence</span>
+          <input id="confidenceFilter" type="range" min="0" max="1" value="0" step="0.05" />
+          <b id="confidenceValue">0%</b>
+        </label>
+        <label>
+          <span>Time grain</span>
+          <select id="grainFilter">
+            <option value="day">Daily</option>
+            <option value="week">Weekly</option>
+            <option value="month" selected>Monthly</option>
+            <option value="quarter">Quarterly</option>
+          </select>
+        </label>
+        <label class="search-control">
+          <span>Review search</span>
+          <input id="searchInput" type="search" placeholder="delay, crowded, ticket..." />
+        </label>
+        <button id="resetFilters" class="secondary-button" type="button">Reset</button>
+      </section>
+
+      <div id="fallbackLoader" class="notice hidden">
+        <strong>CSV could not be loaded automatically.</strong>
+        Run a local server from this folder, or choose the file manually:
+        <input id="manualCsv" type="file" accept=".csv" />
+      </div>
+
+      <nav class="tabs" aria-label="Analysis sections">
+        <button class="tab active" data-tab="overview" type="button">Executive Overview</button>
+        <button class="tab" data-tab="trends" type="button">Time-Based Trends</button>
+        <button class="tab" data-tab="aspects" type="button">Aspect & Root Cause</button>
+        <button class="tab" data-tab="recommendations" type="button">Recommendation Center</button>
+      </nav>
+
+      <main>
+        <section id="overview" class="tab-panel active">
+          <div id="kpiGrid" class="kpi-grid"></div>
+
+          <div class="grid two-col">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Sentiment Distribution</h2>
+                  <p>Share of passenger review sentiment in the selected data.</p>
+                </div>
+              </div>
+              <div id="sentimentChart" class="chart chart-medium"></div>
+              <p id="sentimentInsight" class="insight"></p>
+            </article>
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>NSS Trend</h2>
+                  <p>Net Sentiment Score over selected time grain.</p>
+                </div>
+              </div>
+              <div id="nssTrendOverview" class="chart chart-large"></div>
+              <p id="nssOverviewInsight" class="insight"></p>
+            </article>
+          </div>
+
+          <div class="grid two-col">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Top Service Signals</h2>
+                  <p>Strongest and weakest aspects by sentiment pressure.</p>
+                </div>
+              </div>
+              <div id="topSignals" class="signal-grid"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Line Coverage & Scope</h2>
+                  <p>Line-level coverage in the selected passenger review data.</p>
+                </div>
+              </div>
+              <div id="lineCoverage" class="signal-grid"></div>
+              <p id="lineCoverageInsight" class="insight"></p>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Review Volume Over Time</h2>
+                <p>Dated review volume split by sentiment in the selected time grain.</p>
+              </div>
+            </div>
+            <div id="reviewVolumeOverview" class="chart chart-large"></div>
+            <p id="reviewVolumeOverviewInsight" class="insight"></p>
+          </article>
+        </section>
+
+        <section id="trends" class="tab-panel">
+          <div class="grid three-col">
+            <article class="metric-strip">
+              <span>Worst NSS Drop</span>
+              <strong id="worstDrop">-</strong>
+              <small id="worstDropNote">Waiting for data</small>
+            </article>
+            <article class="metric-strip">
+              <span>Highest Complaint Period</span>
+              <strong id="complaintPeak">-</strong>
+              <small id="complaintPeakNote">Waiting for data</small>
+            </article>
+            <article class="metric-strip">
+              <span>Best Recovery Period</span>
+              <strong id="bestRecovery">-</strong>
+              <small id="bestRecoveryNote">Waiting for data</small>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Time-Based Sentiment Movement</h2>
+                <p>NSS, positive reviews, and negative reviews by selected time grain.</p>
+              </div>
+            </div>
+            <div id="nssTrend" class="chart chart-large"></div>
+            <p id="trendInsight" class="insight"></p>
+          </article>
+
+          <div class="grid two-col">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Sentiment Volume Trend</h2>
+                  <p>Review volume split by sentiment over time.</p>
+                </div>
+              </div>
+              <div id="volumeTrend" class="chart chart-large"></div>
+              <p id="volumeInsight" class="insight"></p>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Aspect Trend</h2>
+                  <p>Negative pressure by aspect across time.</p>
+                </div>
+              </div>
+              <div id="aspectTrend" class="chart chart-large"></div>
+              <p id="aspectTrendInsight" class="insight"></p>
+            </article>
+          </div>
+        </section>
+
+        <section id="aspects" class="tab-panel">
+          <div class="grid two-col">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Aspect Sentiment Distribution</h2>
+                  <p>Positive, neutral, and negative review share by service aspect.</p>
+                </div>
+              </div>
+              <div id="aspectBars" class="chart chart-large"></div>
+              <p id="aspectInsight" class="insight"></p>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Aspect Risk Heatmap</h2>
+                  <p>Negative-rate intensity across aspects and periods.</p>
+                </div>
+              </div>
+              <div id="heatmap" class="heatmap"></div>
+              <p id="heatmapInsight" class="insight"></p>
+            </article>
+          </div>
+
+          <div class="grid two-col">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Root-Cause Evidence Matrix</h2>
+                  <p>Aspect-level evidence used for diagnosis, without notebook business-insight charts.</p>
+                </div>
+              </div>
+              <div id="aspectEvidence" class="evidence-list"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Representative Negative Reviews</h2>
+                  <p>High-confidence comments from the riskiest aspects.</p>
+                </div>
+              </div>
+              <div id="negativeEvidence" class="evidence-list"></div>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Review Evidence</h2>
+                <p>Filtered passenger comments behind the charts.</p>
+              </div>
+              <div class="table-meta" id="tableMeta"></div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th><button class="sort-button" data-sort="date" type="button">Date</button></th>
+                    <th><button class="sort-button" data-sort="line" type="button">Line</button></th>
+                    <th><button class="sort-button" data-sort="aspect" type="button">Aspect</button></th>
+                    <th><button class="sort-button" data-sort="sentiment" type="button">Sentiment</button></th>
+                    <th><button class="sort-button" data-sort="confidence" type="button">Confidence</button></th>
+                    <th>Review</th>
+                  </tr>
+                </thead>
+                <tbody id="reviewTable"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section id="recommendations" class="tab-panel">
+          <div class="recommendation-layout">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Time-Based Operational Recommendation Center</h2>
+                  <p>Recommendations are generated from period movement, not static business-insight charts.</p>
+                </div>
+              </div>
+              <div id="timeDiagnostics" class="diagnostic-grid"></div>
+              <div id="recommendationCards" class="recommendation-grid"></div>
+            </article>
+
+            <aside class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Analysis Context</h2>
+                  <p>Current slice used for recommendation evidence.</p>
+                </div>
+              </div>
+              <div id="contextSummary" class="context-list"></div>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
